@@ -212,11 +212,16 @@ export const acquireHoldJournalLock = (
 };
 
 const syncDirectory = async (path: string): Promise<void> => {
-  const file = await open(dirname(path), "r");
+  if (process.platform === "win32") return;
   try {
-    await file.sync();
-  } finally {
-    await file.close();
+    const file = await open(dirname(path), "r");
+    try {
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+  } catch {
+    // Directory fsync is not supported on all filesystems.
   }
 };
 

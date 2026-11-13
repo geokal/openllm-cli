@@ -189,6 +189,7 @@ const fsyncParentDir = (
   dir: string,
   fsync: typeof fsyncSync = fsyncSync,
 ): void => {
+  if (process.platform === "win32") return;
   let fd: number | null = null;
   try {
     fd = openSync(dir, "r");

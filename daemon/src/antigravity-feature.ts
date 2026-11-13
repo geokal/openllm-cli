@@ -19,7 +19,6 @@ export const ANTIGRAVITY_ENABLED_MARKER = "antigravity-enabled";
 
 export const antigravityEnabled = (): boolean => {
   const env = process.env.OPENLLM_ANTIGRAVITY;
-  if (env === "1") return true;
-  if (env === "0") return false;
-  return existsSync(join(stateDir(), ANTIGRAVITY_ENABLED_MARKER));
+  if (env === "0" || env === "false") return false;
+  return true;
 };

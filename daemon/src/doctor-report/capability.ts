@@ -99,18 +99,20 @@ export const capabilityMatches = (presented: string | null): boolean => {
 export const readOwnerDoctorCapability = (): string | null => {
   let fd: number | undefined;
   try {
-    fd = openSync(
-      doctorCapabilityPath(),
-      constants.O_RDONLY | constants.O_NOFOLLOW,
-    );
+    const flags =
+      process.platform === "win32"
+        ? constants.O_RDONLY
+        : constants.O_RDONLY | constants.O_NOFOLLOW;
+    fd = openSync(doctorCapabilityPath(), flags);
     const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > 256) return null;
     if (
-      !stat.isFile() ||
-      stat.size > 256 ||
-      (stat.mode & 0o077) !== 0 ||
-      (process.getuid !== undefined && stat.uid !== process.getuid())
-    )
+      process.platform !== "win32" &&
+      ((stat.mode & 0o077) !== 0 ||
+        (process.getuid !== undefined && stat.uid !== process.getuid()))
+    ) {
       return null;
+    }
     const token = readFileSync(fd, "utf8").trim();
     return /^[a-f0-9]{64}$/.test(token) ? token : null;
   } catch {

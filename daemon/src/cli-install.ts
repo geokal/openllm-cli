@@ -17,7 +17,9 @@
 import {
   accessSync,
   constants,
+  copyFileSync,
   existsSync,
+  linkSync,
   readdirSync,
   readlinkSync,
   realpathSync,
@@ -131,6 +133,22 @@ const ensureIsolatedDirs = async (provider: TCliProvider): Promise<void> => {
  */
 const regrantPending = new Set<TCliProvider>();
 
+const createLinkOrCopy = (target: string, link: string): void => {
+  try {
+    symlinkSync(target, link, "file");
+  } catch (err) {
+    if (platform() === "win32") {
+      try {
+        linkSync(target, link);
+      } catch {
+        copyFileSync(target, link);
+      }
+    } else {
+      throw err;
+    }
+  }
+};
+
 export const linkIsolatedCli = async (
   provider: TCliProvider,
   hostBin: string,
@@ -154,7 +172,7 @@ export const linkIsolatedCli = async (
   }
   await mkdir(dirname(dst), { recursive: true });
   await rm(dst, { force: true });
-  symlinkSync(hostBin, dst);
+  createLinkOrCopy(hostBin, dst);
   linkSidecars(dst);
   let nextReal: string | null = null;
   try {
@@ -212,7 +230,7 @@ const linkSidecars = (isolatedBin: string): void => {
       }
       try {
         rmSync(link, { force: true });
-        symlinkSync(target, link);
+        createLinkOrCopy(target, link);
       } catch {
         // per-sidecar best effort — the main CLI still runs without it
       }

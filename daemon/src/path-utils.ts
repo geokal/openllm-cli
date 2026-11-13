@@ -136,11 +136,17 @@ export const augmentSpawnPath = (basePath: string | undefined): string => {
 export const resolveOnPath = (cmd: string): string[] => {
   const out: string[] = [];
   const seen = new Set<string>();
+  const candidates =
+    process.platform === "win32" && !cmd.includes(".")
+      ? [cmd, `${cmd}.exe`, `${cmd}.cmd`, `${cmd}.bat`]
+      : [cmd];
   for (const dir of spawnPathDirs()) {
-    const p = join(dir, cmd);
-    if (seen.has(p)) continue;
-    seen.add(p);
-    if (existsSync(p)) out.push(p);
+    for (const c of candidates) {
+      const p = join(dir, c);
+      if (seen.has(p)) continue;
+      seen.add(p);
+      if (existsSync(p)) out.push(p);
+    }
   }
   return out;
 };

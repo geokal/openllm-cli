@@ -73,7 +73,7 @@ type TCliSpec = {
    * (Antigravity's PyInstaller bundle unpacks ~1 GB per start). `null` means
    * installed / version unknown. Absent = spawn the `--version` probe.
    */
-  readonly installedVersion?: (resolvedBin: string) => string | null;
+  readonly installedVersion?: (resolvedBin: string) => string | null | undefined;
 };
 
 /**
@@ -149,20 +149,20 @@ const antigravityHarnessPath = (): string => {
 /** `{"version":"x.y.z",…}` from the installer's completion marker. */
 const readAntigravityInstalledVersion = (
   resolvedBin: string,
-): string | null => {
+): string | null | undefined => {
   try {
     const raw = readFileSync(
       join(dirname(resolvedBin), ANTIGRAVITY_INSTALL_MARKER),
       "utf8",
     );
     const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object") return null;
+    if (parsed === null || typeof parsed !== "object") return undefined;
     const version = (parsed as { readonly version?: unknown }).version;
     return typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version)
       ? version
-      : null;
+      : undefined;
   } catch {
-    return null;
+    return undefined;
   }
 };
 
@@ -301,9 +301,15 @@ const SPECS: Readonly<Record<TCliProvider, TCliSpec>> = {
   // probe, `delegation/antigravity-usage.ts`) can never touch the user's own `~/.gemini` or the OS keychain.
   // PyInstaller unpacks under the shared isolated TMPDIR from {@link cliEnv}.
   antigravity: {
-    binRel: "bin/agy_acp_server",
-    cmd: "agy_acp_server",
-    hostCandidates: (home) => [antigravityManagedExecutable(home)],
+    binRel: process.platform === "win32" ? "bin/agy.exe" : "bin/agy_acp_server",
+    cmd: "agy",
+    hostCandidates: (home) => [
+      join(home, "AppData", "Local", "agy", "bin", "agy.exe"),
+      join(home, "AppData", "Local", "Programs", "Antigravity IDE", "bin", "agy.exe"),
+      join(home, ".local", "bin", "agy.exe"),
+      join(home, ".local", "bin", "agy"),
+      antigravityManagedExecutable(home),
+    ],
     configDir: (home) => join(home, ".gemini"),
     env: ({ config }) => ({
       GEMINI_HOME: config,
@@ -424,7 +430,14 @@ export const hostCliCandidates = (
   const vendorDefaults = SPECS[provider].hostCandidates(home);
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const p of [...vendorDefaults, ...resolveOnPath(SPECS[provider].cmd)]) {
+  const scanCmds =
+    provider === "antigravity"
+      ? ["agy", "agy_acp_server"]
+      : [SPECS[provider].cmd];
+  for (const p of [
+    ...vendorDefaults,
+    ...scanCmds.flatMap((c) => resolveOnPath(c)),
+  ]) {
     // Muse: prefer launcher-active native muse-bin-<version> beside ANY
     // discovered launcher (default ~/.local/bin or a PATH custom install).
     if (provider === "muse") {

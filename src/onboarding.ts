@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
+  copyFileSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -266,11 +267,24 @@ export const saveEnvVars = (
     );
     try {
       writeFileSync(temp, `${next.join("\n")}\n`, { mode: 0o600, flag: "wx" });
-      const fd = openSync(temp, "r");
-      try {
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
+      if (process.platform !== "win32") {
+        const fd = openSync(temp, "r");
+        try {
+          fsyncSync(fd);
+        } finally {
+          closeSync(fd);
+        }
+      } else {
+        try {
+          const fd = openSync(temp, "r+");
+          try {
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
+        } catch {
+          // fsync is best-effort on Windows
+        }
       }
       try {
         const stat = lstatSync(target);
@@ -278,8 +292,21 @@ export const saveEnvVars = (
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
       }
-      renameSync(temp, target);
-      chmodSync(target, 0o600);
+      try {
+        renameSync(temp, target);
+      } catch (err) {
+        if (process.platform === "win32") {
+          copyFileSync(temp, target);
+          unlinkSync(temp);
+        } else {
+          throw err;
+        }
+      }
+      try {
+        chmodSync(target, 0o600);
+      } catch {
+        // Windows
+      }
       return true;
     } finally {
       try {

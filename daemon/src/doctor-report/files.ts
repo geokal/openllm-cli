@@ -5,6 +5,7 @@
 import {
   chmodSync,
   closeSync,
+  copyFileSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -64,7 +65,16 @@ const defaultAtomicWrite: TAtomicWrite = (path, contents): boolean => {
     } catch {
       // ignore
     }
-    renameSync(tmp, path);
+    try {
+      renameSync(tmp, path);
+    } catch (err) {
+      if (process.platform === "win32") {
+        copyFileSync(tmp, path);
+        unlinkSync(tmp);
+      } else {
+        throw err;
+      }
+    }
     try {
       chmodSync(path, FILE_MODE);
     } catch {

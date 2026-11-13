@@ -59,6 +59,7 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  copyFileSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -69,7 +70,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   bearerApiKeyOf,
   parseOpenllmDaemonPort,
@@ -489,7 +490,7 @@ export const writeEnvFileVars = (
       const content = `${updatedEnvLines(existing, updates).join("\n")}\n`;
       const temporaryPath = join(
         parentDir,
-        `.${targetPath.split("/").at(-1) ?? "env"}.${randomUUID()}.tmp`,
+        `.${basename(targetPath) || "env"}.${randomUUID()}.tmp`,
       );
       let temporaryFd: number | null = null;
       try {
@@ -501,13 +502,28 @@ export const writeEnvFileVars = (
         // Re-check immediately before replacement to reject a target swapped for
         // a symlink by another local process while this writer held the lock.
         if (!isSafeEnvTarget(targetPath)) return false;
-        renameSync(temporaryPath, targetPath);
-        chmodSync(targetPath, 0o600);
-        const directoryFd = openSync(parentDir, "r");
         try {
-          fsyncSync(directoryFd);
-        } finally {
-          closeSync(directoryFd);
+          renameSync(temporaryPath, targetPath);
+        } catch (err) {
+          if (process.platform === "win32") {
+            copyFileSync(temporaryPath, targetPath);
+            unlinkSync(temporaryPath);
+          } else {
+            throw err;
+          }
+        }
+        try {
+          chmodSync(targetPath, 0o600);
+        } catch {
+          // Windows
+        }
+        if (process.platform !== "win32") {
+          const directoryFd = openSync(parentDir, "r");
+          try {
+            fsyncSync(directoryFd);
+          } finally {
+            closeSync(directoryFd);
+          }
         }
         return true;
       } finally {

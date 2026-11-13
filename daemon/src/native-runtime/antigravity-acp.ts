@@ -46,7 +46,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { TChatCompletionChunk } from "@openllmsh/sdk/protocol";
 import { daemonTempDir } from "../sandbox/working-set";
 import { DAEMON_VERSION } from "../version";
@@ -117,8 +117,13 @@ export const antigravitySpawnEnv = (
 };
 
 /** The agent's argv. Linux builds need an explicit empty `--uid=`. */
-export const antigravityArgv = (bin: string): string[] =>
-  process.platform === "linux" ? [bin, "--uid="] : [bin];
+export const antigravityArgv = (bin: string): string[] => {
+  const base = basename(bin).toLowerCase();
+  if (base === "agy" || base === "agy.exe") {
+    return [bin, "acp"];
+  }
+  return process.platform === "linux" ? [bin, "--uid="] : [bin];
+};
 
 /** Where the agent keeps its sign-in token under GEMINI_HOME (read only by
  *  the usage probe). */
@@ -146,8 +151,14 @@ type TInitializeResult = {
 export const isAntigravityAgent = (result: unknown): boolean => {
   const init = result as TInitializeResult | null;
   if (init === null || typeof init !== "object") return false;
+  const name =
+    typeof init.agentInfo?.name === "string"
+      ? init.agentInfo.name.toLowerCase()
+      : "";
+  const nameMatches =
+    name === ANTIGRAVITY_AGENT_NAME || name.includes("antigravity");
   return (
-    init.agentInfo?.name === ANTIGRAVITY_AGENT_NAME &&
+    nameMatches &&
     (init.protocolVersion === 1 || init.protocolVersion === 2) &&
     Array.isArray(init.authMethods) &&
     init.authMethods.some((m) => m.id === ANTIGRAVITY_AUTH_METHOD)
@@ -1211,6 +1222,11 @@ export const writeAntigravityBrowserHelper = (
   dir: string,
   urlFile: string,
 ): string => {
+  if (process.platform === "win32") {
+    const helper = join(dir, "browser.cmd");
+    writeFileSync(helper, `@echo %~1>> "${urlFile}"\r\n@exit /b 0\r\n`);
+    return helper;
+  }
   const helper = join(dir, "browser.sh");
   writeFileSync(
     helper,

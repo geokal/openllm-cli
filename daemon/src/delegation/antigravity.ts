@@ -23,9 +23,10 @@
  * Demand-only: `status()` never spawns the agent (each launch unpacks ~1 GB).
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   TDaemonProviderConnection,
@@ -102,11 +103,40 @@ const LOGOUT_TIMEOUT_MS = 30_000;
 const INSTALL_HINT =
   "Google Antigravity agent not installed — rerun the OpenLLM installer (curl -fsSL https://www.openllm.sh/install | bash).";
 
+const FALLBACK_ANTIGRAVITY_MODELS = [
+  { provider_model_id: "gemini-3.8-flash-high", display_name: "Gemini 3.8 Flash (High Thinking)" },
+  { provider_model_id: "gemini-3.8-flash-medium", display_name: "Gemini 3.8 Flash (Medium Thinking)" },
+  { provider_model_id: "gemini-3.8-flash-low", display_name: "Gemini 3.8 Flash (Low Thinking)" },
+  { provider_model_id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" },
+  { provider_model_id: "claude-opus-4-6-thinking", display_name: "Claude Opus 4.6 Thinking" },
+  { provider_model_id: "gpt-oss-120b-medium", display_name: "GPT OSS 120B (Medium Thinking)" },
+];
+
 const geminiHome = (): string => cliConfigDir(PROVIDER);
 const tokenPath = (): string => antigravityTokenPath(geminiHome());
 
+/** Seed isolated token from host ~/.gemini token if present. */
+const seedTokenFromHostIfPresent = (): void => {
+  const isolated = tokenPath();
+  try {
+    if (existsSync(isolated) && statSync(isolated).size > 0) return;
+  } catch {
+    // continue to attempt seed
+  }
+  const host = join(homedir(), ".gemini", "antigravity-acp", "acp_token.json");
+  try {
+    if (existsSync(host) && statSync(host).size > 0) {
+      prepareAntigravityProfile(geminiHome());
+      copyFileSync(host, isolated);
+    }
+  } catch {
+    // best effort seed
+  }
+};
+
 /** Presence of the agent's own token file — never its contents. */
 const tokenPresent = (): boolean => {
+  seedTokenFromHostIfPresent();
   try {
     const st = statSync(tokenPath());
     return st.isFile() && st.size > 0;
@@ -493,14 +523,18 @@ export const antigravityDelegate: TProviderDelegate = {
     _options: TModelDiscoveryOptions,
   ): Promise<TModelDiscoveryResult> => {
     const models = readAntigravityModels(geminiHome());
-    return models === null ? { kind: "skipped" } : { kind: "success", models };
+    if (models !== null) return { kind: "success", models };
+    if (tokenPresent()) return { kind: "success", models: FALLBACK_ANTIGRAVITY_MODELS };
+    return { kind: "skipped" };
   },
   listModels: (opts?: TListModelsOptions) =>
     listWithReason(opts, async () => {
       if (!tokenPresent()) {
         return { kind: "null", reason: "token_unavailable" };
       }
-      return detailedFromCliList(readAntigravityModels(geminiHome()));
+      const models =
+        readAntigravityModels(geminiHome()) ?? FALLBACK_ANTIGRAVITY_MODELS;
+      return detailedFromCliList(models);
     }),
 
   // Quota windows via Google's Code Assist quota endpoints with the agent's
