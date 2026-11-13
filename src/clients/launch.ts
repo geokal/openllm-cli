@@ -162,18 +162,21 @@ const parseGrokCatalog = (
 /** The placeholder values every overlay may reference. */
 export const overlayVars = (
   inputs: TLaunchInputs,
-): Readonly<Record<string, string>> => ({
-  OPENLLM_API_BASE: inputs.apiBase,
-  OPENLLM_API_KEY: inputs.apiKey,
-  OPENLLM_BIN: inputs.binPath,
-  HOOKS_DIR: `${inputs.runDir}/hooks`,
-  MODEL_CATALOG_PATH: `${inputs.runDir}/models.json`,
-  // TOML overlays (grok, codex) carry `args = {{MCP_ARGS}}` at an array
-  // position; `substitute` fills it with the JSON/TOML array literal. JSON
-  // overlays instead use `substituteJsonValue` on the quoted `"{{MCP_ARGS}}"`
-  // (see each plan) so the raw overlay stays valid JSON.
-  MCP_ARGS: mcpArgsJson(inputs.tier),
-});
+): Readonly<Record<string, string>> => {
+  const norm = (p: string) => p.replaceAll("\\", "/");
+  return {
+    OPENLLM_API_BASE: inputs.apiBase,
+    OPENLLM_API_KEY: inputs.apiKey,
+    OPENLLM_BIN: norm(inputs.binPath),
+    HOOKS_DIR: norm(`${inputs.runDir}/hooks`),
+    MODEL_CATALOG_PATH: norm(`${inputs.runDir}/models.json`),
+    // TOML overlays (grok, codex) carry `args = {{MCP_ARGS}}` at an array
+    // position; `substitute` fills it with the JSON/TOML array literal. JSON
+    // overlays instead use `substituteJsonValue` on the quoted `"{{MCP_ARGS}}"`
+    // (see each plan) so the raw overlay stays valid JSON.
+    MCP_ARGS: mcpArgsJson(inputs.tier),
+  };
+};
 
 /**
  * The env var the run-local `apiKeyHelper` echoes. Deliberately NOT one of
@@ -353,9 +356,10 @@ export const codexOverrideArgs = (
 const planCodex = (inputs: TLaunchInputs): TLaunchPlan => {
   const files: Record<string, string> = {};
   if (inputs.catalog !== undefined) files["models.json"] = inputs.catalog;
+  const vars = overlayVars(inputs);
   const args = [
-    ...codexOverrideArgs(overlayVars(inputs), inputs.catalog !== undefined),
-    ...codexHookArgs(OVERLAYS.codex.hooks, inputs.binPath, inputs.tier),
+    ...codexOverrideArgs(vars, inputs.catalog !== undefined),
+    ...codexHookArgs(OVERLAYS.codex.hooks, vars.OPENLLM_BIN, inputs.tier),
   ];
   return {
     files,

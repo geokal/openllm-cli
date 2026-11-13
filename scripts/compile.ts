@@ -19,7 +19,7 @@
  *   bun run packages/cli/scripts/compile.ts --host     # current host only
  *   bun run packages/cli/scripts/compile.ts --version 1.2.3
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -179,12 +179,25 @@ const buildOne = async (
     ${defines} \
     ${targetArgs} \
     --outfile ${outfile}`;
+  // On Windows, bun build --compile appends .exe to the output executable name
+  // if not already present. Resolve the actual binary path created by bun.
+  const actualOutfile = existsSync(outfile)
+    ? outfile
+    : existsSync(`${outfile}.exe`)
+      ? `${outfile}.exe`
+      : outfile;
+
   // Gzip sidecar for DISTRIBUTION — the published GitHub asset is the `.gz`.
   // The release pins the sha256 of the DECOMPRESSED binary; install +
   // self-update decompress before verifying, so the integrity gate is
   // independent of gzip's non-determinism.
-  writeFileSync(`${outfile}.gz`, gzipSync(readFileSync(outfile), { level: 9 }));
-  return outfile;
+  const binaryBytes = readFileSync(actualOutfile);
+  const gzipped = gzipSync(binaryBytes, { level: 9 });
+  writeFileSync(`${actualOutfile}.gz`, gzipped);
+  if (actualOutfile !== outfile) {
+    writeFileSync(`${outfile}.gz`, gzipped);
+  }
+  return actualOutfile;
 };
 
 const main = async (): Promise<void> => {

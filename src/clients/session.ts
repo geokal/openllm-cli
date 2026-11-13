@@ -69,16 +69,15 @@ export const findClientBinary = (client: TClient): string | null => {
   for (const candidate of client.binPaths) {
     const abs = expandHome(candidate);
     if (existsSync(abs)) return abs;
+    if (process.platform === "win32") {
+      if (existsSync(`${abs}.exe`)) return `${abs}.exe`;
+      if (existsSync(`${abs}.cmd`)) return `${abs}.cmd`;
+      if (existsSync(`${abs}.bat`)) return `${abs}.bat`;
+    }
   }
   // Fall back to PATH resolution — `spawn` would do this anyway, but resolving
   // here lets us print the install hint instead of an ENOENT stack.
-  const dirs = (process.env.PATH ?? "").split(":");
-  for (const dir of dirs) {
-    if (dir.length === 0) continue;
-    const abs = join(dir, client.bin);
-    if (existsSync(abs)) return abs;
-  }
-  return null;
+  return Bun.which(client.bin, { PATH: process.env.PATH ?? "" });
 };
 
 /**
@@ -681,9 +680,12 @@ export type TExecClient = (
  */
 const defaultExecClient: TExecClient = (bin, args, env, unsetEnv = []) =>
   new Promise((resolve) => {
+    const isWindows = process.platform === "win32";
+    const isCmdOrBat = isWindows && /\.(cmd|bat)$/i.test(bin);
     const child = spawn(bin, args, {
       stdio: "inherit",
       env: mergeSessionEnv(process.env, env, unsetEnv),
+      ...(isCmdOrBat ? { shell: true } : {}),
     });
     const forward = (signal: NodeJS.Signals) => (): void => {
       // Let the child decide how to die; our own exit follows its code.

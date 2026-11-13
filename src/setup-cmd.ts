@@ -31,7 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { userInfo } from "node:os";
-import { basename, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { COMPLETION_SHELLS } from "./commands";
 import type { TCompletionShell } from "./commands";
 import { completionTargetPath, installCompletion } from "./completion";
@@ -432,7 +432,7 @@ export const sessionPathExportLine = (): string =>
 const openllmBinOnPath = (): boolean => {
   const homeBin = binDir();
   const pathEnv = process.env.PATH ?? "";
-  for (const entry of pathEnv.split(":")) {
+  for (const entry of pathEnv.split(delimiter)) {
     if (entry === homeBin || entry === "$HOME/.openllm/bin") return true;
     // Also accept a home-expanded form written by a previous session.
     try {
