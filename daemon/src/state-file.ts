@@ -20,7 +20,6 @@
  * guards in the callers still prevent tight loops.
  */
 import {
-  copyFileSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -235,13 +234,20 @@ const writeStateAtomic = (state: TDaemonState): void => {
   try {
     mkdirSync(stateDir(), { recursive: true });
     writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
-    try {
-      renameSync(tmp, stateFilePath());
-    } catch (err) {
-      if (process.platform === "win32") {
-        copyFileSync(tmp, stateFilePath());
-        rmSync(tmp, { force: true });
-      } else {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        renameSync(tmp, stateFilePath());
+        break;
+      } catch (err) {
+        if (process.platform === "win32" && attempt < 7) {
+          Atomics.wait(
+            new Int32Array(new SharedArrayBuffer(4)),
+            0,
+            0,
+            10 * (attempt + 1),
+          );
+          continue;
+        }
         throw err;
       }
     }

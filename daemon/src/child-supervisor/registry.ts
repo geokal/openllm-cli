@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -83,6 +84,28 @@ export const processStartTimePsEnv = (): NodeJS.ProcessEnv => ({
 
 /** PID-reuse-safe process identity. Mirrors the durable session-host lstart check. */
 export const processStartTime = (pid: number): string | null => {
+  if (process.platform === "win32") {
+    try {
+      const output = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`,
+        ],
+        {
+          timeout: 2_000,
+          stdio: ["ignore", "pipe", "ignore"],
+          encoding: "utf8",
+        },
+      );
+      const value = output.trim();
+      return value.length > 0 ? value : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const output = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
       stdout: "pipe",
@@ -101,7 +124,8 @@ export const processStartTime = (pid: number): string | null => {
  * Named budget for the async `ps -o lstart=` helper. Failure to obtain
  * identity returns null; it must not drop in-memory tracking.
  */
-export const PROCESS_START_TIME_HELPER_TIMEOUT_MS = 400;
+export const PROCESS_START_TIME_HELPER_TIMEOUT_MS =
+  process.platform === "win32" ? 3_000 : 400;
 /** After the named budget expires, wait this long for SIGTERM before SIGKILL. */
 export const PROCESS_START_TIME_HELPER_KILL_WAIT_MS = 50;
 
@@ -113,14 +137,28 @@ export type TProcessStartTimeHelperSpawn = (
  *  here — that would recurse identity lookup. */
 export const defaultProcessStartTimeHelperSpawn: TProcessStartTimeHelperSpawn =
   (pid) =>
-    Bun.spawn(["ps", "-o", "lstart=", "-p", String(pid)], {
-      stdout: "pipe",
-      stderr: "ignore",
-      env: processStartTimePsEnv(),
-      // Own process group so reap can SIGKILL descendants without touching
-      // the daemon group. Custom helpers must also set detached: true.
-      detached: true,
-    });
+    process.platform === "win32"
+      ? Bun.spawn(
+          [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`,
+          ],
+          {
+            stdout: "pipe",
+            stderr: "ignore",
+          },
+        )
+      : Bun.spawn(["ps", "-o", "lstart=", "-p", String(pid)], {
+          stdout: "pipe",
+          stderr: "ignore",
+          env: processStartTimePsEnv(),
+          // Own process group so reap can SIGKILL descendants without touching
+          // the daemon group. Custom helpers must also set detached: true.
+          detached: true,
+        });
 
 /** Cancel a helper subprocess stdout stream so it can exit. */
 const closeHelperStdout = (proc: ReturnType<typeof Bun.spawn>): void => {
@@ -140,6 +178,14 @@ const reapStartTimeHelper = async (
   proc: ReturnType<typeof Bun.spawn>,
 ): Promise<void> => {
   closeHelperStdout(proc);
+  if (process.platform === "win32") {
+    try {
+      proc.kill();
+    } catch {
+      // ignore
+    }
+    return;
+  }
   const pgid = proc.pid;
   // Detached helper is group leader (pgid === pid). Never signalGroup(0/1).
   signalGroup(pgid, "SIGTERM");

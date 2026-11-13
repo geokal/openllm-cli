@@ -39,7 +39,7 @@ const readCapability = (): string | null => {
   );
   if (!existsSync(path)) return null;
   try {
-    if ((statSync(path).mode & 0o077) !== 0) return null;
+    if (process.platform !== "win32" && (statSync(path).mode & 0o077) !== 0) return null;
     const token = readFileSync(path, "utf8").trim();
     return token.length > 0 ? token : null;
   } catch {

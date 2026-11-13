@@ -5,7 +5,6 @@
 import {
   chmodSync,
   closeSync,
-  copyFileSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -65,13 +64,20 @@ const defaultAtomicWrite: TAtomicWrite = (path, contents): boolean => {
     } catch {
       // ignore
     }
-    try {
-      renameSync(tmp, path);
-    } catch (err) {
-      if (process.platform === "win32") {
-        copyFileSync(tmp, path);
-        unlinkSync(tmp);
-      } else {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try {
+        renameSync(tmp, path);
+        break;
+      } catch (err) {
+        if (process.platform === "win32" && attempt < 7) {
+          Atomics.wait(
+            new Int32Array(new SharedArrayBuffer(4)),
+            0,
+            0,
+            10 * (attempt + 1),
+          );
+          continue;
+        }
         throw err;
       }
     }

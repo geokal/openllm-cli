@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 export const DEFAULT_TERMINATE_GRACE_MS = 2_000;
@@ -62,6 +63,22 @@ export const signalProcessTree = (
   pid: number,
   signal: NodeJS.Signals,
 ): void => {
+  if (process.platform === "win32") {
+    try {
+      spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch {
+      // already gone
+    }
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // already gone
+    }
+    return;
+  }
   try {
     process.kill(pid, signal);
   } catch {
@@ -135,6 +152,26 @@ export const signalGroup = (
   // sig)` targets our OWN group — neither is ever a supervised child, so a
   // bogus pgid must never reach process.kill.
   if (!assertSafePgid(pgid)) return false;
+  if (process.platform === "win32") {
+    if (signal === 0) {
+      return processAlive(pgid);
+    }
+    if (!deliver) return true;
+    try {
+      spawnSync("taskkill", ["/F", "/T", "/PID", String(pgid)], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch {
+      // already gone
+    }
+    try {
+      process.kill(pgid, signal);
+    } catch {
+      // already gone
+    }
+    return !processAlive(pgid);
+  }
   if (!deliver && signal !== 0) {
     return true;
   }

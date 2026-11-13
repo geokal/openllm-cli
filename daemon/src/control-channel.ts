@@ -115,6 +115,17 @@ const decodeStampedRtcOffer = Schema.decodeUnknownResult(
   RelayStampedRtcOfferFrame,
 );
 
+const safeDecode = <A>(
+  decoder: (input: unknown) => Result.Result<A, unknown>,
+  input: unknown,
+): Result.Result<A, unknown> => {
+  try {
+    return decoder(input);
+  } catch (err) {
+    return Result.fail(err);
+  }
+};
+
 /** Full-snapshot stringify — only on a changed watcher tick / actual publish. */
 export const stringifyStatusSnapshot = (status: unknown): string =>
   JSON.stringify(status);
@@ -1312,7 +1323,7 @@ const dispatchFrame = (frame: TRelayFrame): void => {
       heartbeat.notePong();
       return;
     case "channel_open": {
-      const decoded = decodeStampedChannelOpen(frame);
+      const decoded = safeDecode(decodeStampedChannelOpen, frame);
       if (Result.isFailure(decoded)) {
         send({
           type: "channel_open_ack",
@@ -1332,7 +1343,7 @@ const dispatchFrame = (frame: TRelayFrame): void => {
       closeChannelFromRelay(frame);
       return;
     case "rtc_offer": {
-      const decoded = decodeStampedRtcOffer(frame);
+      const decoded = safeDecode(decodeStampedRtcOffer, frame);
       if (Result.isFailure(decoded)) {
         send({
           type: "rtc_nack",
@@ -1487,7 +1498,7 @@ const onMessage = (data: unknown): void => {
   } catch {
     return;
   }
-  const r = decodeFrame(json);
+  const r = safeDecode(decodeFrame, json);
   if (Result.isSuccess(r)) {
     onFrame(r.success);
     return;
@@ -1791,7 +1802,13 @@ export const startControlChannel = (options?: TControlChannelOptions): void => {
     heartbeat.start();
   };
   socket.onmessage = (ev: MessageEvent): void => {
-    onMessage(ev.data);
+    try {
+      onMessage(ev.data);
+    } catch (err) {
+      logWarn("control-channel", "unhandled exception in onmessage", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   };
   socket.onerror = (ev): void => {
     // Retryable dial failures are debug-only; partysocket backs off and retries.

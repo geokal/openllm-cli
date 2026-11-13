@@ -6,6 +6,8 @@
  * records a pidfile under the state dir with process start time so a recycled
  * pid cannot impersonate a live daemon.
  */
+declare const Bun: any;
+
 import { execFileSync } from "node:child_process";
 import {
   closeSync,
@@ -190,6 +192,28 @@ export const readDetachedProcessCommandLine = (pid: number): string | null => {
       return null;
     }
   }
+  if (process.platform === "win32") {
+    try {
+      const out = execFileSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`,
+        ],
+        {
+          encoding: "utf8",
+          timeout: 3_000,
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      );
+      const trimmed = out.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const out = execFileSync("ps", ["-o", "command=", "-p", String(pid)], {
       encoding: "utf8",
@@ -210,14 +234,33 @@ export const readDetachedProcessCommandLine = (pid: number): string | null => {
  * child. Exported for tests.
  */
 export const detachedCommandLineLooksOwned = (commandLine: string): boolean => {
-  // `/proc/.../cmdline` is NUL-separated; normalize without a control-char regex.
-  const normalized = commandLine.split("\0").join(" ");
-  if (/(?:^|[\s/])__session-host(?:\s|$)/.test(normalized)) return true;
-  // Managed `openllm`/`openllmd`, or a release/compile target binary
-  // (`openllm-darwin-arm64`, `openllm-linux-x64-baseline`, …).
-  return /(?:^|\/)(openllm(?:-[A-Za-z0-9._-]+)?|openllmd)(?:\.exe)?[\s]+daemon(?:\s|$)/i.test(
-    normalized,
-  );
+  if (commandLine.includes("\0")) {
+    const parts = commandLine.split("\0").filter((p) => p.length > 0);
+    if (parts.includes("__session-host")) return true;
+    if (parts.length >= 2) {
+      const exe = parts[0]?.replace(/^['"]|['"]$/g, "") ?? "";
+      const base = exe.split(/[/\\]/).pop() ?? "";
+      const isDaemon = parts[1]?.replace(/^['"]|['"]$/g, "") === "daemon";
+      if (
+        isDaemon &&
+        /^(openllm(?:-[A-Za-z0-9._-]+)?|openllmd)(?:\.exe)?$/i.test(base)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+  const trimmed = commandLine.trim();
+  if (/(?:^|\s)__session-host(?:\s|$)/.test(trimmed)) return true;
+  const match = /^(?:(?:"([^"]+)")|(.+?))\s+["']?daemon(?:["'\s]|$)/i.exec(trimmed);
+  if (match) {
+    const rawExe = match[1] ?? match[2] ?? "";
+    const base = rawExe.split(/[/\\]/).pop() ?? "";
+    if (/^(openllm(?:-[A-Za-z0-9._-]+)?|openllmd)(?:\.exe)?$/i.test(base)) {
+      return true;
+    }
+  }
+  return false;
 };
 
 /** Ownership of a live pid relative to our detached daemon. */

@@ -59,7 +59,6 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
-  copyFileSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -502,13 +501,20 @@ export const writeEnvFileVars = (
         // Re-check immediately before replacement to reject a target swapped for
         // a symlink by another local process while this writer held the lock.
         if (!isSafeEnvTarget(targetPath)) return false;
-        try {
-          renameSync(temporaryPath, targetPath);
-        } catch (err) {
-          if (process.platform === "win32") {
-            copyFileSync(temporaryPath, targetPath);
-            unlinkSync(temporaryPath);
-          } else {
+        for (let attempt = 0; attempt < 8; attempt++) {
+          try {
+            renameSync(temporaryPath, targetPath);
+            break;
+          } catch (err) {
+            if (process.platform === "win32" && attempt < 7) {
+              Atomics.wait(
+                new Int32Array(new SharedArrayBuffer(4)),
+                0,
+                0,
+                10 * (attempt + 1),
+              );
+              continue;
+            }
             throw err;
           }
         }

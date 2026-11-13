@@ -28,7 +28,7 @@ import {
 } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { platform } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { projectDoctorOutcomeLedger } from "@openllmsh/sdk/protocol";
 import type { TCliProvider } from "./cli-paths";
 import {
@@ -134,6 +134,7 @@ const ensureIsolatedDirs = async (provider: TCliProvider): Promise<void> => {
 const regrantPending = new Set<TCliProvider>();
 
 const createLinkOrCopy = (target: string, link: string): void => {
+  if (target === link) return;
   try {
     symlinkSync(target, link, "file");
   } catch (err) {
@@ -155,6 +156,15 @@ export const linkIsolatedCli = async (
 ): Promise<{ readonly targetChanged: boolean }> => {
   await ensureIsolatedDirs(provider);
   const dst = cliBin(provider);
+  const normHost = resolve(hostBin);
+  const normDst = resolve(dst);
+  const isSame =
+    platform() === "win32"
+      ? normHost.toLowerCase() === normDst.toLowerCase()
+      : normHost === normDst;
+  if (isSame) {
+    return { targetChanged: false };
+  }
   let previousReal: string | null = null;
   try {
     previousReal = realpathSync(dst);
@@ -173,7 +183,7 @@ export const linkIsolatedCli = async (
   await mkdir(dirname(dst), { recursive: true });
   await rm(dst, { force: true });
   createLinkOrCopy(hostBin, dst);
-  linkSidecars(dst);
+  linkSidecars(dst, hostBin);
   let nextReal: string | null = null;
   try {
     nextReal = realpathSync(dst);
@@ -211,11 +221,18 @@ const regrantKeychainAfterRelink = async (
  * 30s `cliInstallState` self-heal path) and best-effort per entry: a sidecar
  * failure must never break the main CLI link.
  */
-const linkSidecars = (isolatedBin: string): void => {
+const linkSidecars = (isolatedBin: string, hostBin?: string): void => {
   try {
-    const real = realpathSync(isolatedBin);
-    const realDir = dirname(real);
+    let realDir: string;
+    try {
+      const source = hostBin ?? isolatedBin;
+      realDir = dirname(realpathSync(source));
+    } catch {
+      if (hostBin === undefined) return;
+      realDir = dirname(hostBin);
+    }
     const isolatedDir = dirname(isolatedBin);
+    if (realDir === isolatedDir) return;
     const prefix = `${basename(isolatedBin)}-`;
     const current = new Set<string>();
     for (const entry of readdirSync(realDir)) {

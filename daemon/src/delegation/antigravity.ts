@@ -23,13 +23,22 @@
  * Demand-only: `status()` never spawns the agent (each launch unpacks ~1 GB).
  */
 
-import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type {
   TDaemonProviderConnection,
+  TProviderModelEntry,
   TProviderUsageSnapshot,
 } from "@openllmsh/sdk/protocol";
 import { accountCell } from "../account-scope";
@@ -45,7 +54,7 @@ import {
   antigravitySpawnEnv,
   antigravityTokenPath,
   classifyAntigravityFailure,
-  disposeAntigravityWarmPool,
+  disposeAntigravityWarmPoolForGeminiHome,
   isAntigravityAgent,
   parseAntigravityAuthUrl,
   prepareAntigravityProfile,
@@ -54,6 +63,8 @@ import {
   writeAntigravityBrowserHelper,
 } from "../native-runtime/antigravity-acp";
 import {
+  antigravitySignInIdentity,
+  clearAntigravityModels,
   readAntigravityModels,
   recordAntigravityModels,
 } from "../native-runtime/antigravity-model-observation";
@@ -103,20 +114,24 @@ const LOGOUT_TIMEOUT_MS = 30_000;
 const INSTALL_HINT =
   "Google Antigravity agent not installed — rerun the OpenLLM installer (curl -fsSL https://www.openllm.sh/install | bash).";
 
-const FALLBACK_ANTIGRAVITY_MODELS = [
-  { provider_model_id: "gemini-3.8-flash-high", display_name: "Gemini 3.8 Flash (High Thinking)" },
-  { provider_model_id: "gemini-3.8-flash-medium", display_name: "Gemini 3.8 Flash (Medium Thinking)" },
-  { provider_model_id: "gemini-3.8-flash-low", display_name: "Gemini 3.8 Flash (Low Thinking)" },
-  { provider_model_id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" },
-  { provider_model_id: "claude-opus-4-6-thinking", display_name: "Claude Opus 4.6 Thinking" },
-  { provider_model_id: "gpt-oss-120b-medium", display_name: "GPT OSS 120B (Medium Thinking)" },
-];
-
 const geminiHome = (): string => cliConfigDir(PROVIDER);
 const tokenPath = (): string => antigravityTokenPath(geminiHome());
+const logoutMarker = (): string => join(geminiHome(), ".antigravity_logged_out");
+
+const clearLogoutMarker = (): boolean => {
+  try {
+    if (existsSync(logoutMarker())) {
+      unlinkSync(logoutMarker());
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 /** Seed isolated token from host ~/.gemini token if present. */
 const seedTokenFromHostIfPresent = (): void => {
+  if (existsSync(logoutMarker())) return;
   const isolated = tokenPath();
   try {
     if (existsSync(isolated) && statSync(isolated).size > 0) return;
@@ -134,15 +149,24 @@ const seedTokenFromHostIfPresent = (): void => {
   }
 };
 
-/** Presence of the agent's own token file — never its contents. */
-const tokenPresent = (): boolean => {
-  seedTokenFromHostIfPresent();
+const physicalTokenPresent = (): boolean => {
   try {
     const st = statSync(tokenPath());
     return st.isFile() && st.size > 0;
   } catch {
     return false;
   }
+};
+
+/** Presence of the agent's own token file — never its contents. */
+const tokenPresent = (allowSeed = true): boolean => {
+  if (existsSync(logoutMarker())) {
+    return false;
+  }
+  if (allowSeed) {
+    seedTokenFromHostIfPresent();
+  }
+  return physicalTokenPresent();
 };
 
 const wiring = loginWiring({
@@ -189,8 +213,23 @@ const forwardCallback = (callback: URL): Promise<boolean> =>
     req.end();
   });
 
-const connect = (): Promise<TConnectResult> =>
-  guard(
+const logoutCell = accountCell<{ inProgress: boolean; generation: number }>(() => ({
+  inProgress: false,
+  generation: 0,
+}));
+const inFlightLogouts = accountCell<Promise<{
+  readonly ok: boolean;
+  readonly detail: string;
+}> | null>(() => null);
+const activeLoginClient = accountCell<AcpClient | null>(() => null);
+
+const connect = (): Promise<TConnectResult> => {
+  const currentLogout = logoutCell.get();
+  if (currentLogout.inProgress) {
+    return Promise.resolve({ connected: false, detail: "logout in progress" });
+  }
+  const startingGeneration = currentLogout.generation;
+  return guard(
     {
       provider: PROVIDER,
       installed: wiring.isInstalled,
@@ -225,6 +264,11 @@ const connect = (): Promise<TConnectResult> =>
         resolveUrl?.(parsed);
       };
 
+      if (startingGeneration !== logoutCell.get().generation) {
+        await rm(scratch, { recursive: true, force: true });
+        return { connected: false, detail: "sign-in cancelled by logout" };
+      }
+
       let client: AcpClient;
       try {
         client = new AcpClient(
@@ -241,6 +285,7 @@ const connect = (): Promise<TConnectResult> =>
             onNonJsonLine: offer,
           },
         );
+        activeLoginClient.set(client);
       } catch (error) {
         await rm(scratch, { recursive: true, force: true });
         const message =
@@ -256,6 +301,11 @@ const connect = (): Promise<TConnectResult> =>
         client.dispose();
         pendingCallback.set(null);
         void rm(scratch, { recursive: true, force: true });
+        void client.whenExited().then(() => {
+          if (activeLoginClient.get() === client) {
+            activeLoginClient.set(null);
+          }
+        });
       };
       if (!wiring.slot.start(dispose, flow)) {
         dispose();
@@ -289,14 +339,33 @@ const connect = (): Promise<TConnectResult> =>
         if (finished) return;
         finished = true;
         clearInterval(poll);
-        if (wiring.slot.wasCancelled()) {
+        if (
+          wiring.slot.wasCancelled() ||
+          startingGeneration !== logoutCell.get().generation
+        ) {
           dispose();
           wiring.slot.end(flow.flowId);
           return;
         }
-        if (result.ok && tokenPresent()) {
+        if (result.ok && physicalTokenPresent()) {
+          if (!clearLogoutMarker()) {
+            finalizeLoginTerminal({
+              flow,
+              event: {
+                kind: "failed",
+                code: "cli_crash",
+                message: "Failed to clear logout marker after Google sign-in",
+                retryable: true,
+              },
+              provider: PROVIDER,
+              clearPending: true,
+            });
+            dispose();
+            wiring.slot.end(flow.flowId);
+            return;
+          }
           // A new sign-in: no warm agent from the previous one may serve.
-          disposeAntigravityWarmPool();
+          void disposeAntigravityWarmPoolForGeminiHome(geminiHome());
           noteAuthStoreIdentityChange(PROVIDER);
           finalizeLoginTerminal({
             flow,
@@ -434,6 +503,7 @@ const connect = (): Promise<TConnectResult> =>
       };
     },
   );
+};
 
 const submitLoginCode = async (
   pasted: string,
@@ -457,6 +527,78 @@ const cancelConnect = makeCancelConnect(PROVIDER, wiring.slot, {
   cancelled: "Google sign-in cancelled",
   none: "no sign-in was in progress",
 });
+
+const activeProbeClients = new Map<string, Set<AcpClient>>();
+
+const registerProbeClient = (home: string, client: AcpClient): void => {
+  let set = activeProbeClients.get(home);
+  if (set === undefined) {
+    set = new Set();
+    activeProbeClients.set(home, set);
+  }
+  set.add(client);
+};
+
+const unregisterProbeClient = (home: string, client: AcpClient): void => {
+  const set = activeProbeClients.get(home);
+  if (set !== undefined) {
+    set.delete(client);
+    if (set.size === 0) activeProbeClients.delete(home);
+  }
+};
+
+const waitForExit = (client: AcpClient, timeoutMs = 5_000): Promise<boolean> =>
+  Promise.race([
+    client.whenExited().then(() => true),
+    new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+
+type TPendingProbe = {
+  readonly home: string;
+  client: AcpClient | null;
+  readonly waitExited: () => Promise<boolean>;
+};
+
+const probeGenerations = new Map<string, number>();
+const probeGenerationOf = (home: string): number =>
+  probeGenerations.get(home) ?? 0;
+const pendingProbeStartups = new Set<TPendingProbe>();
+
+export const disposeProbeClients = async (home: string): Promise<boolean> => {
+  probeGenerations.set(home, probeGenerationOf(home) + 1);
+  const pending = [...pendingProbeStartups].filter((p) => p.home === home);
+  for (const p of pending) {
+    if (p.client !== null) p.client.dispose();
+  }
+  const set = activeProbeClients.get(home);
+  const exitPromises: Promise<boolean>[] = [];
+  if (set !== undefined) {
+    for (const client of set) {
+      try {
+        client.dispose();
+        exitPromises.push(
+          waitForExit(client, 5_000).then((exited) => {
+            if (exited) {
+              set.delete(client);
+            }
+            return exited;
+          }),
+        );
+      } catch {
+        // ignore
+      }
+    }
+  }
+  const pendingExits = await Promise.all(pending.map((p) => p.waitExited()));
+  const activeExits = await Promise.all(exitPromises);
+  if (set !== undefined && set.size === 0) {
+    activeProbeClients.delete(home);
+  }
+  return [...pendingExits, ...activeExits].every((r) => r === true);
+};
 
 export const antigravityDelegate: TProviderDelegate = {
   slug: PROVIDER,
@@ -516,15 +658,14 @@ export const antigravityDelegate: TProviderDelegate = {
     };
   },
 
-  // Models come ONLY from the agent's own session/new selector, observed
-  // during sign-in and every inference turn — never a dedicated probe.
-  // Unobserved → skipped (the previously reported list stands).
+  // Models come from the agent's own session/new selector. Observed during
+  // sign-in and inference turns.
   discoverModels: async (
     _options: TModelDiscoveryOptions,
   ): Promise<TModelDiscoveryResult> => {
+    if (!tokenPresent()) return { kind: "skipped" };
     const models = readAntigravityModels(geminiHome());
     if (models !== null) return { kind: "success", models };
-    if (tokenPresent()) return { kind: "success", models: FALLBACK_ANTIGRAVITY_MODELS };
     return { kind: "skipped" };
   },
   listModels: (opts?: TListModelsOptions) =>
@@ -532,9 +673,12 @@ export const antigravityDelegate: TProviderDelegate = {
       if (!tokenPresent()) {
         return { kind: "null", reason: "token_unavailable" };
       }
-      const models =
-        readAntigravityModels(geminiHome()) ?? FALLBACK_ANTIGRAVITY_MODELS;
-      return detailedFromCliList(models);
+      const cached = readAntigravityModels(geminiHome());
+      if (cached !== null) {
+        return detailedFromCliList(cached);
+      }
+      const probed = await probeAntigravityModels();
+      return detailedFromCliList(probed);
     }),
 
   // Quota windows via Google's Code Assist quota endpoints with the agent's
@@ -549,14 +693,176 @@ export const antigravityDelegate: TProviderDelegate = {
   },
 
   logout: async () => {
-    if (
-      tokenPresent() &&
-      (await cliInstallState(PROVIDER, { demand: true })).installed
-    ) {
-      const scratch = await mkdtemp(join(daemonTempDir(), "agy-logout-"));
-      const client = new AcpClient(
+    const existing = inFlightLogouts.get();
+    if (existing !== null) {
+      return existing;
+    }
+    const run = async (): Promise<{
+      readonly ok: boolean;
+      readonly detail: string;
+    }> => {
+      const state = logoutCell.get();
+      logoutCell.set({ inProgress: true, generation: state.generation + 1 });
+      try {
+        const activeLogin = activeLoginClient.get();
+        wiring.slot.cancelAll();
+        if (activeLogin !== null) {
+          activeLoginClient.set(null);
+          const exited = await waitForExit(activeLogin, 5_000);
+          if (!exited) {
+            return {
+              ok: false,
+              detail: "timed out waiting for active sign-in process to exit",
+            };
+          }
+        }
+        try {
+          const marker = logoutMarker();
+          mkdirSync(dirname(marker), { recursive: true, mode: 0o700 });
+          writeFileSync(marker, "");
+        } catch {
+          return { ok: false, detail: "failed to record logout marker" };
+        }
+        const probesClean = await disposeProbeClients(geminiHome());
+        if (!probesClean) {
+          clearLogoutMarker();
+          return {
+            ok: false,
+            detail: "timed out waiting for probe processes to exit",
+          };
+        }
+        clearAntigravityModels(geminiHome());
+        try {
+          const installState = await cliInstallState(PROVIDER, {
+            demand: true,
+          }).catch(() => ({ installed: false, version: null }));
+          if (physicalTokenPresent() && installState.installed) {
+            let scratch: string | null = null;
+            let client: AcpClient | null = null;
+            let logoutClientExited = true;
+            try {
+              scratch = await mkdtemp(join(daemonTempDir(), "agy-logout-"));
+              client = new AcpClient(
+                cliBin(PROVIDER),
+                antigravitySpawnEnv(cliEnv(PROVIDER)),
+                () => {},
+                () => null,
+                {
+                  argv: antigravityArgv(cliBin(PROVIDER)),
+                  label: "agy_acp_server",
+                  probe: false,
+                  exactEnv: true,
+                  cwd: scratch,
+                },
+              );
+              await client.request(
+                "initialize",
+                ANTIGRAVITY_INIT_PARAMS,
+                LOGOUT_TIMEOUT_MS,
+              );
+              await client.request("logout", {}, LOGOUT_TIMEOUT_MS);
+            } catch {
+              // surfaced through the presence check below
+            } finally {
+              if (client !== null) {
+                client.dispose();
+                logoutClientExited = await waitForExit(client, 5_000);
+              }
+              if (scratch !== null) {
+                try {
+                  await rm(scratch, { recursive: true, force: true });
+                } catch {
+                  // best effort cleanup
+                }
+              }
+            }
+            if (!logoutClientExited) {
+              clearLogoutMarker();
+              return {
+                ok: false,
+                detail: "timed out waiting for logout process to exit",
+              };
+            }
+          }
+        } catch {
+          // installation check failure is best-effort
+        }
+        await disposeAntigravityWarmPoolForGeminiHome(geminiHome());
+        noteAuthStoreIdentityChange(PROVIDER);
+        try {
+          const tokenFile = antigravityTokenPath(geminiHome());
+          if (existsSync(tokenFile)) unlinkSync(tokenFile);
+        } catch {
+          // ignore
+        }
+        const present = physicalTokenPresent();
+        if (present) {
+          clearLogoutMarker();
+          return { ok: false, detail: "credential still present after logout" };
+        }
+        return { ok: true, detail: "signed out of Google Antigravity" };
+      } finally {
+        const current = logoutCell.get();
+        logoutCell.set({ ...current, inProgress: false });
+      }
+    };
+
+    const logoutPromise = run().finally(() => {
+      inFlightLogouts.set(null);
+    });
+    inFlightLogouts.set(logoutPromise);
+    return logoutPromise;
+  },
+};
+
+const inFlightModelProbes = new Map<
+  string,
+  Promise<ReadonlyArray<TProviderModelEntry> | null>
+>();
+
+const probeAntigravityModels = async (): Promise<ReadonlyArray<TProviderModelEntry> | null> => {
+  if (existsSync(logoutMarker())) return null;
+  if (!(await cliInstallState(PROVIDER, { demand: true })).installed) {
+    return null;
+  }
+  const home = geminiHome();
+  const startingIdentity = antigravitySignInIdentity(home);
+  if (startingIdentity === null) return null;
+
+  const probeKey = `${home}:${startingIdentity}`;
+  const existing = inFlightModelProbes.get(probeKey);
+  if (existing !== undefined) return existing;
+
+  const probePromise = (async (): Promise<ReadonlyArray<TProviderModelEntry> | null> => {
+    let startupDoneResolve: () => void;
+    const startupDone = new Promise<void>((res) => {
+      startupDoneResolve = res;
+    });
+    const startup: TPendingProbe = {
+      home,
+      client: null,
+      waitExited: async () => {
+        await startupDone;
+        if (startup.client !== null) {
+          return await waitForExit(startup.client, 5_000);
+        }
+        return true;
+      },
+    };
+    pendingProbeStartups.add(startup);
+    const startGen = probeGenerationOf(home);
+    let scratch: string | null = null;
+    let client: AcpClient | null = null;
+    try {
+      scratch = await mkdtemp(join(daemonTempDir(), "agy-models-"));
+      if (startGen !== probeGenerationOf(home) || existsSync(logoutMarker())) {
+        return null;
+      }
+      client = new AcpClient(
         cliBin(PROVIDER),
-        antigravitySpawnEnv(cliEnv(PROVIDER)),
+        antigravitySpawnEnv(cliEnv(PROVIDER), {
+          BROWSER: process.platform === "win32" ? "cmd /c exit 0" : "true",
+        }),
         () => {},
         () => null,
         {
@@ -567,24 +873,75 @@ export const antigravityDelegate: TProviderDelegate = {
           cwd: scratch,
         },
       );
+      startup.client = client;
+      if (startGen !== probeGenerationOf(home) || existsSync(logoutMarker())) {
+        client.dispose();
+        return null;
+      }
+      registerProbeClient(home, client);
+      if (existsSync(logoutMarker())) return null;
+      await client.request("initialize", ANTIGRAVITY_INIT_PARAMS, URL_WAIT_MS);
+      if (startGen !== probeGenerationOf(home) || existsSync(logoutMarker())) {
+        return null;
+      }
       try {
         await client.request(
-          "initialize",
-          ANTIGRAVITY_INIT_PARAMS,
-          LOGOUT_TIMEOUT_MS,
+          "authenticate",
+          { methodId: ANTIGRAVITY_AUTH_METHOD },
+          5_000,
         );
-        await client.request("logout", {}, LOGOUT_TIMEOUT_MS);
       } catch {
-        // surfaced through the presence check below
-      } finally {
-        client.dispose();
-        await rm(scratch, { recursive: true, force: true });
+        return null;
+      }
+      if (startGen !== probeGenerationOf(home) || existsSync(logoutMarker())) {
+        return null;
+      }
+      const opened = await client.request(
+        "session/new",
+        { cwd: scratch, mcpServers: [] },
+        URL_WAIT_MS,
+      );
+      if (startGen !== probeGenerationOf(home) || existsSync(logoutMarker())) {
+        return null;
+      }
+      const currentIdentity = antigravitySignInIdentity(home);
+      if (currentIdentity === null || currentIdentity !== startingIdentity) {
+        return null;
+      }
+      const rows = antigravityModelRows(opened);
+      if (rows.length === 0) return null;
+      recordAntigravityModels(home, rows);
+      return rows.map((r) => ({
+        provider_model_id: r.value,
+        ...(r.name !== null ? { display_name: r.name } : {}),
+      }));
+    } catch {
+      return null;
+    } finally {
+      startupDoneResolve!();
+      pendingProbeStartups.delete(startup);
+      if (client !== null) {
+        try {
+          client.dispose();
+          await waitForExit(client, 5_000);
+        } finally {
+          unregisterProbeClient(home, client);
+        }
+      }
+      if (scratch !== null) {
+        try {
+          await rm(scratch, { recursive: true, force: true });
+        } catch {
+          // best effort cleanup
+        }
       }
     }
-    disposeAntigravityWarmPool();
-    noteAuthStoreIdentityChange(PROVIDER);
-    return tokenPresent()
-      ? { ok: false, detail: "credential still present after logout" }
-      : { ok: true, detail: "signed out of Google Antigravity" };
-  },
+  })();
+
+  inFlightModelProbes.set(probeKey, probePromise);
+  try {
+    return await probePromise;
+  } finally {
+    inFlightModelProbes.delete(probeKey);
+  }
 };

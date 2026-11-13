@@ -35,6 +35,7 @@ import {
 import { getDelegate } from "./delegation";
 import { loginSlot } from "./delegation/login-flow";
 import { clearAccountCooldowns } from "./hop-cooldown";
+import { disposeProbeClients } from "./delegation/antigravity";
 import { disposeAntigravityWarmPoolForGeminiHome } from "./native-runtime/antigravity-acp";
 import { disposeCodexAppServerClientForHome } from "./native-runtime/codex-app-server";
 import { runWithAccount } from "./op-context";
@@ -67,7 +68,8 @@ const disposeAccountRuntimes = async (
     await disposeCodexAppServerClientForHome(env.CODEX_HOME ?? "");
     const geminiHome = env.GEMINI_HOME;
     if (geminiHome !== undefined && geminiHome.length > 0) {
-      disposeAntigravityWarmPoolForGeminiHome(geminiHome);
+      await disposeAntigravityWarmPoolForGeminiHome(geminiHome);
+      await disposeProbeClients(geminiHome);
     }
   });
 };

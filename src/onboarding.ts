@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
-  copyFileSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -292,13 +291,20 @@ export const saveEnvVars = (
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
       }
-      try {
-        renameSync(temp, target);
-      } catch (err) {
-        if (process.platform === "win32") {
-          copyFileSync(temp, target);
-          unlinkSync(temp);
-        } else {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+          renameSync(temp, target);
+          break;
+        } catch (err) {
+          if (process.platform === "win32" && attempt < 7) {
+            Atomics.wait(
+              new Int32Array(new SharedArrayBuffer(4)),
+              0,
+              0,
+              10 * (attempt + 1),
+            );
+            continue;
+          }
           throw err;
         }
       }

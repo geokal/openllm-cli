@@ -46,7 +46,9 @@ export const DEV_VERSION_SENTINEL = "0.0.0-dev";
 export const compileNodeEnv = (
   version: string,
 ): "development" | "production" =>
-  version === DEV_VERSION_SENTINEL ? "development" : "production";
+  process.env.NODE_ENV === "development" || version === DEV_VERSION_SENTINEL
+    ? "development"
+    : "production";
 
 /**
  * `--define` tokens shared by `buildOne` and the compiled-binary tests. One
@@ -156,9 +158,20 @@ const versionIdx = argv.indexOf("--version");
 // via `--version`. A source build with no `--version` bakes the `"0.0.0-dev"`
 // sentinel, which the runtime's dev guards (self-update) key on to skip
 // production behaviour. Same model as the daemon.
+const packageJsonVersion = (): string => {
+  try {
+    return (
+      JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).version ??
+      DEV_VERSION_SENTINEL
+    );
+  } catch {
+    return DEV_VERSION_SENTINEL;
+  }
+};
+
 const version =
   versionIdx >= 0
-    ? (argv[versionIdx + 1] ?? DEV_VERSION_SENTINEL)
+    ? (argv[versionIdx + 1] ?? packageJsonVersion())
     : DEV_VERSION_SENTINEL;
 
 const outfileFor = (target: string): string => {

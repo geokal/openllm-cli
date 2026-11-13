@@ -52,9 +52,16 @@ import { daemonTempDir } from "../sandbox/working-set";
 import { DAEMON_VERSION } from "../version";
 import {
   antigravitySignInIdentity,
+  clearAntigravityModels,
   readAntigravityModels,
   recordAntigravityModels,
 } from "./antigravity-model-observation";
+export {
+  antigravitySignInIdentity,
+  clearAntigravityModels,
+  readAntigravityModels,
+  recordAntigravityModels,
+};
 import { AcpClient, AcpRpcError, createAcpTurnState } from "./cursor-acp";
 import type { TCursorMcpServer } from "./cursor-mcp-server";
 import { startCursorMcpServer } from "./cursor-mcp-server";
@@ -119,7 +126,12 @@ export const antigravitySpawnEnv = (
 /** The agent's argv. Linux builds need an explicit empty `--uid=`. */
 export const antigravityArgv = (bin: string): string[] => {
   const base = basename(bin).toLowerCase();
-  if (base === "agy" || base === "agy.exe") {
+  if (
+    base === "agy" ||
+    base === "agy.exe" ||
+    base === "agy.cmd" ||
+    base === "agy.bat"
+  ) {
     return [bin, "acp"];
   }
   return process.platform === "linux" ? [bin, "--uid="] : [bin];
@@ -600,7 +612,16 @@ type TWarmAgent = {
   idleTimer: ReturnType<typeof setTimeout> | undefined;
 };
 
+type TPendingColdStartup = {
+  readonly geminiHome: string | undefined;
+  client: AcpClient | null;
+  readonly waitExited: () => Promise<void>;
+};
+
 const idlePool: TWarmAgent[] = [];
+const activeWarmAgents = new Set<TWarmAgent>();
+const retiringWarmAgents = new Set<TWarmAgent>();
+const pendingColdStartups = new Set<TPendingColdStartup>();
 let warmEpoch = 0;
 let exitHookInstalled = false;
 /** Per-GEMINI_HOME generation; dispose bumps it so stale agents retire. */
@@ -626,7 +647,18 @@ export const antigravityWarmKey = (
     .digest("hex");
 };
 
+export const waitForExit = (
+  client: AcpClient,
+  timeoutMs = 5_000,
+): Promise<void> =>
+  Promise.race([
+    client.whenExited().then(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+
 const retireWarmAgent = (agent: TWarmAgent, sessionId: string | null): void => {
+  activeWarmAgents.delete(agent);
+  retiringWarmAgents.add(agent);
   clearTimeout(agent.idleTimer);
   agent.idleTimer = undefined;
   agent.route.onUpdate = null;
@@ -635,8 +667,13 @@ const retireWarmAgent = (agent: TWarmAgent, sessionId: string | null): void => {
   else agent.client.dispose();
   void agent.client
     .whenExited()
-    .then(() => rm(agent.procCwd, { recursive: true, force: true }))
-    .catch(() => undefined);
+    .then(() => {
+      retiringWarmAgents.delete(agent);
+      return rm(agent.procCwd, { recursive: true, force: true });
+    })
+    .catch(() => {
+      retiringWarmAgents.delete(agent);
+    });
 };
 
 const removeFromIdlePool = (agent: TWarmAgent): void => {
@@ -697,8 +734,9 @@ const releaseWarmAgent = (
   }
   if (!exitHookInstalled) {
     exitHookInstalled = true;
-    process.on("exit", () => disposeAntigravityWarmPool());
+    process.on("exit", () => void disposeAntigravityWarmPool());
   }
+  activeWarmAgents.delete(agent);
   idlePool.push(agent);
   agent.idleTimer = setTimeout(() => {
     removeFromIdlePool(agent);
@@ -715,26 +753,61 @@ const releaseWarmAgent = (
  * Kill every parked process and make every leased one un-parkable. Called on
  * sign-in / sign-out (the account behind the agent changed) and daemon exit.
  */
-export const disposeAntigravityWarmPool = (): void => {
+export const disposeAntigravityWarmPool = async (): Promise<void> => {
   warmEpoch += 1;
-  for (const agent of idlePool.splice(0)) retireWarmAgent(agent, null);
+  const pending = [...pendingColdStartups];
+  for (const p of pending) {
+    if (p.client !== null) p.client.dispose();
+  }
+  const toRetire = new Set([
+    ...idlePool.splice(0),
+    ...activeWarmAgents,
+    ...retiringWarmAgents,
+  ]);
+  for (const agent of toRetire) retireWarmAgent(agent, null);
+  await Promise.all([
+    ...[...toRetire].map((agent) => waitForExit(agent.client, 5_000)),
+    ...pending.map((p) => p.waitExited()),
+  ]);
 };
 
 /**
  * Retire parked (and block re-parking of leased) warm agents bound to one
  * account's `GEMINI_HOME`. Used when that account slot is removed.
  */
-export const disposeAntigravityWarmPoolForGeminiHome = (
+export const disposeAntigravityWarmPoolForGeminiHome = async (
   geminiHome: string,
-): void => {
+): Promise<void> => {
   if (geminiHome.length === 0) return;
   geminiHomeGenerations.set(geminiHome, homeGenerationOf(geminiHome) + 1);
+  const pending = [...pendingColdStartups].filter(
+    (p) => p.geminiHome === geminiHome,
+  );
+  for (const p of pending) {
+    if (p.client !== null) p.client.dispose();
+  }
+  const toRetire = new Set<TWarmAgent>();
   for (let i = idlePool.length - 1; i >= 0; i--) {
     const agent = idlePool[i];
     if (agent === undefined || agent.geminiHome !== geminiHome) continue;
     idlePool.splice(i, 1);
-    retireWarmAgent(agent, null);
+    toRetire.add(agent);
   }
+  for (const agent of activeWarmAgents) {
+    if (agent.geminiHome === geminiHome) {
+      toRetire.add(agent);
+    }
+  }
+  for (const agent of retiringWarmAgents) {
+    if (agent.geminiHome === geminiHome) {
+      toRetire.add(agent);
+    }
+  }
+  for (const agent of toRetire) retireWarmAgent(agent, null);
+  await Promise.all([
+    ...[...toRetire].map((agent) => waitForExit(agent.client, 5_000)),
+    ...pending.map((p) => p.waitExited()),
+  ]);
 };
 
 /** Number of parked processes (diagnostics + tests). */
@@ -821,6 +894,8 @@ export const runAntigravityNative = async (
 
   const spawnEnv = antigravitySpawnEnv(params.env);
   const warmKey = antigravityWarmKey(params.bin, spawnEnv);
+  const turnEpoch = warmEpoch;
+  const turnHomeGen = homeGenerationOf(geminiHome);
 
   // Empty, daemon-owned TURN cwd: bounds anything the agent could see
   // natively. Fresh per request, independent of the process cwd.
@@ -916,24 +991,56 @@ export const runAntigravityNative = async (
   };
 
   /** Take ownership of a process for this turn. If the turn already ended
-   *  (client abort mid-setup) the process is retired immediately. */
+   *  (client abort mid-setup) or if disposal occurred during startup, the
+   *  process is retired immediately and not adopted. */
   const adopt = (next: TWarmAgent): void => {
-    agent = next;
-    if (cleaned) {
+    if (
+      cleaned ||
+      params.signal.aborted ||
+      next.epoch !== warmEpoch ||
+      next.epoch !== turnEpoch ||
+      homeGenerationStale(next) ||
+      turnHomeGen !== homeGenerationOf(geminiHome)
+    ) {
       retireWarmAgent(next, null);
       return;
     }
+    activeWarmAgents.add(next);
+    agent = next;
     next.route.onUpdate = onUpdate;
     next.route.allowedMcpTools = allowedMcpTools;
   };
 
   /** Spawn a cold process and run the handshake on it. */
   const startCold = async (): Promise<void> => {
-    const procCwd = await mkdtemp(join(daemonTempDir(), "agy-proc-"));
-    const route: TWarmRoute = { onUpdate: null, allowedMcpTools: new Set() };
-    let client: AcpClient;
+    let startupDoneResolve: () => void;
+    const startupDone = new Promise<void>((res) => {
+      startupDoneResolve = res;
+    });
+    const startup: TPendingColdStartup = {
+      geminiHome,
+      client: null,
+      waitExited: async () => {
+        await startupDone;
+        if (startup.client !== null) {
+          await waitForExit(startup.client, 5_000);
+        }
+      },
+    };
+    pendingColdStartups.add(startup);
+    let procCwd: string | null = null;
     try {
-      client = new AcpClient(
+      if (
+        turnEpoch !== warmEpoch ||
+        turnHomeGen !== homeGenerationOf(geminiHome) ||
+        cleaned ||
+        params.signal.aborted
+      ) {
+        throw new DOMException("disposed during startup", "AbortError");
+      }
+      procCwd = await mkdtemp(join(daemonTempDir(), "agy-proc-"));
+      const route: TWarmRoute = { onUpdate: null, allowedMcpTools: new Set() };
+      const client = new AcpClient(
         params.bin,
         spawnEnv,
         (method, p) => {
@@ -953,43 +1060,49 @@ export const runAntigravityNative = async (
             : {}),
         },
       );
-    } catch (error) {
-      void rm(procCwd, { recursive: true, force: true });
-      throw error;
-    }
-    adopt({
-      key: warmKey,
-      client,
-      procCwd,
-      route,
-      epoch: warmEpoch,
-      geminiHome,
-      homeGeneration: homeGenerationOf(geminiHome),
-      turns: 0,
-      identity: null,
-      idleTimer: undefined,
-    });
-    const init = await client.request(
-      "initialize",
-      ANTIGRAVITY_INIT_PARAMS,
-      RPC_TIMEOUT_MS,
-    );
-    if (!isAntigravityAgent(init)) {
-      throw new AcpRpcError({
-        method: "initialize",
-        kind: "rpc",
-        message: "agent is not the expected Google Antigravity release",
+      startup.client = client;
+      adopt({
+        key: warmKey,
+        client,
+        procCwd,
+        route,
+        epoch: turnEpoch,
+        geminiHome,
+        homeGeneration: turnHomeGen,
+        turns: 0,
+        identity: null,
+        idleTimer: undefined,
       });
-    }
-    await client.request(
-      "authenticate",
-      { methodId: ANTIGRAVITY_AUTH_METHOD },
-      params.authTimeoutMs ?? INFERENCE_AUTH_TIMEOUT_MS,
-    );
-    const owned = currentAgent();
-    if (owned !== null && owned.client === client) {
-      owned.identity =
-        geminiHome === undefined ? null : antigravitySignInIdentity(geminiHome);
+      const init = await client.request(
+        "initialize",
+        ANTIGRAVITY_INIT_PARAMS,
+        RPC_TIMEOUT_MS,
+      );
+      if (!isAntigravityAgent(init)) {
+        throw new AcpRpcError({
+          method: "initialize",
+          kind: "rpc",
+          message: "agent is not the expected Google Antigravity release",
+        });
+      }
+      await client.request(
+        "authenticate",
+        { methodId: ANTIGRAVITY_AUTH_METHOD },
+        params.authTimeoutMs ?? INFERENCE_AUTH_TIMEOUT_MS,
+      );
+      const owned = currentAgent();
+      if (owned !== null && owned.client === client) {
+        owned.identity =
+          geminiHome === undefined ? null : antigravitySignInIdentity(geminiHome);
+      }
+    } catch (error) {
+      if (procCwd !== null && startup.client === null && agent === null) {
+        void rm(procCwd, { recursive: true, force: true }).catch(() => {});
+      }
+      throw error;
+    } finally {
+      startupDoneResolve!();
+      pendingColdStartups.delete(startup);
     }
   };
 
@@ -1048,7 +1161,9 @@ export const runAntigravityNative = async (
           error instanceof AcpRpcError &&
           error.kind === "transport" &&
           !params.signal.aborted &&
-          !cleaned;
+          !cleaned &&
+          leased.epoch === warmEpoch &&
+          !homeGenerationStale(leased);
         if (!stale) throw error;
         retireWarmAgent(leased, null);
         agent = null;
@@ -1224,13 +1339,16 @@ export const writeAntigravityBrowserHelper = (
 ): string => {
   if (process.platform === "win32") {
     const helper = join(dir, "browser.cmd");
-    writeFileSync(helper, `@echo %~1>> "${urlFile}"\r\n@exit /b 0\r\n`);
+    writeFileSync(
+      helper,
+      `@setlocal DisableDelayedExpansion\r\n@set "URL=%~1"\r\n@if "%URL%"=="" set "URL=%*"\r\n@set "DEST=${urlFile}"\r\n@setlocal EnableDelayedExpansion\r\n@echo(!URL!>> "!DEST!"\r\n@endlocal\r\n@endlocal\r\n@exit /b 0\r\n`,
+    );
     return helper;
   }
   const helper = join(dir, "browser.sh");
   writeFileSync(
     helper,
-    `#!/bin/sh\nprintf '%s\\n' "$1" >> '${urlFile.replaceAll("'", "'\\''")}'\nexit 0\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$1" >> '${urlFile.split("'").join("'\\''")}'\nexit 0\n`,
     { mode: 0o700 },
   );
   return helper;
