@@ -107,11 +107,15 @@ Copy-Item "dist\openllm.exe" "$HOME\.openllm\bin\openllm.exe" -Force
    - On an idle machine, periodic watcher polls passed `skipUnchanged: true`, completely suppressing status transmission.
    - Result: Any newly opened or reloaded browser tab remained in `device.status === undefined`, causing the Web UI to show:
      > *"No device paired yet. Set one up under Keys on a macOS or Linux machine..."*
-3. **The Fix**:
-   - In [`daemon/src/control-channel.ts`](file:///C:/Users/bigbu/source/repos/cli/daemon/src/control-channel.ts):
-     - On `case "welcome"`: immediately call `void pushStatus(undefined, "welcome");` upon receiving the relay's `welcome` frame so status sequence 2 is dispatched without delay.
-     - In `startWatcher`: on slow heartbeat ticks (`decision.heartbeatOnly`), call `pushStatus(undefined, "watcher")` (which forces `skipUnchanged: false`) instead of `pushStatusIfChanged()`.
-   - In [`daemon/src/status-dirty.ts`](file:///C:/Users/bigbu/source/repos/cli/daemon/src/status-dirty.ts): Reduced `STATUS_WATCH_HEARTBEAT_MS` to `30_000` (30 seconds) so any new browser tab connects and receives the active daemon state within 30 seconds.
+3. **The Root Causes & Solutions**:
+   - **Status Starvation**:
+     - `daemon/src/status-publish-coalesce.ts` gated on `skipUnchanged: true`.
+     - *Fix*: In `control-channel.ts`, push unconditionally on `welcome` frame and on periodic watcher heartbeat ticks. In `status-dirty.ts`, reduced `STATUS_WATCH_HEARTBEAT_MS` to 30s.
+   - **Silent Drop of Welcome Frame Due to Duplicate `effect` Packages**:
+     - `@openllmsh/sdk#v2.10.17` had a nested `node_modules/@openllmsh/sdk/node_modules/effect`.
+     - When `control-channel.ts` called `decodeFrame = Schema.decodeUnknownResult(RelayFrame)` (from root `effect`), Effect Schema's internal Symbol-based AST checks failed on `RelayCapability` (`isMinLength(1)` check in `snapshot_caps` and `caps`), returning a `SchemaError`.
+     - In `onMessage`, undecodable non-command frames were dropped without running `case "welcome"`, preventing `supportsOrderedStatus` from being set to `true` and causing `canSend()` to fail status pushes.
+     - *Fix*: Added `"overrides": { "effect": "4.0.6" }` in `package.json` to deduplicate `effect`. Added resilient fallback decoding in `onMessage` so `welcome` frames are never dropped even if schema refinements change, plus added `logWarn` diagnostics for undecodable frames.
 
 ### Device Cryptographic Anchoring
 - Configuration is loaded from `$HOME\.openllm\.env`:

@@ -1524,6 +1524,24 @@ const onMessage = (data: unknown): void => {
     onFrame(r.success);
     return;
   }
+  // Fallback for welcome frame: never silently drop a welcome handshake even if
+  // an SDK schema constraint fails on open-vocabulary capabilities.
+  if (
+    json !== null &&
+    typeof json === "object" &&
+    !Array.isArray(json) &&
+    (json as { type?: unknown }).type === "welcome"
+  ) {
+    logWarn(
+      "control-channel",
+      "welcome frame failed strict schema validation; applying fallback decode",
+      {
+        err: Result.isFailure(r) ? String(r.failure) : "unknown error",
+      },
+    );
+    onFrame(json as TRelayFrame);
+    return;
+  }
   // Unknown/undecodable JSON: if it looks like a command with an id, ack an
   // explicit outdated error so future kinds fail clearly instead of hanging
   // the caller until their timeout (§6 — no silent drop).
@@ -1552,8 +1570,16 @@ const onMessage = (data: unknown): void => {
           },
         },
       });
+      return;
     }
   }
+  logWarn("control-channel", "inbound frame failed schema validation", {
+    type:
+      json !== null && typeof json === "object"
+        ? (json as { type?: unknown }).type
+        : typeof json,
+    err: Result.isFailure(r) ? String(r.failure) : "unknown error",
+  });
 };
 
 /** partysocket calls this before every (re)connect — fetch a fresh channel so
