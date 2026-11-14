@@ -126,6 +126,7 @@ Copy-Item "dist\openllm.exe" "$HOME\.openllm\bin\openllm.exe" -Force
 
 ### Windows Portability Adaptations
 - **PTY Execution**: Node/Bun child process spawning on Windows must avoid `detached: true` when wrapping console sessions.
+- **Terminal Window / Popup Prevention**: Background probes (e.g. `--version` checks on vendor CLIs wrapped in `.cmd` or `.bat`, and start-time lookups via PowerShell) must NOT use `detached: true` on Windows. In Win32, `detached: true` tells Windows to allocate a new console (`CREATE_NEW_CONSOLE`), which Windows Terminal intercepts by opening a new window or tab. Always use `detached: process.platform !== "win32"` and set `windowsHide: true`.
 - **Path Schemes**: `ws+unix://` socket URLs must normalize drive letters to forward slashes (e.g. `ws+unix:///C:/Users/...`).
 - **External Binaries**: Vendor CLI lookup must probe `.exe` and `.cmd` extensions in Windows PATH.
 
