@@ -104,6 +104,7 @@ import { scheduleDaemonCommand } from "./scheduled-command";
 import { computeStatusFresh, setStatusPublishQueueSnapshot } from "./status";
 import {
   markStatusDirty,
+  STATUS_WATCH_HEARTBEAT_MS,
   STATUS_WATCH_POLL_MS,
   statusWatcherGate,
 } from "./status-dirty";
