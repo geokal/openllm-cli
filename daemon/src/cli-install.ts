@@ -193,15 +193,13 @@ export const linkIsolatedCli = async (
   if (platform() === "win32") {
     const hostExt = extname(hostBin).toLowerCase();
     const dstExt = extname(dst).toLowerCase();
+    const dstBase = dstExt ? dst.slice(0, -dstExt.length) : dst;
     if (hostExt === ".cmd" || hostExt === ".bat") {
-      const targetBatch = dstExt ? `${dst.slice(0, -dstExt.length)}${hostExt}` : `${dst}${hostExt}`;
-      if (dstExt === ".exe") {
-        try {
-          await rm(dst, { force: true });
-        } catch {
-          // best-effort batch link on Windows
-        }
-      }
+      const targetBatch = `${dstBase}${hostExt}`;
+      const altBatch = `${dstBase}${hostExt === ".cmd" ? ".bat" : ".cmd"}`;
+      // Clean up native binary or stale alternate batch extension so cliBin doesn't pick it
+      try { rmSync(`${dstBase}.exe`, { force: true }); } catch {}
+      try { rmSync(altBatch, { force: true }); } catch {}
       if (resolve(targetBatch).toLowerCase() !== resolve(hostBin).toLowerCase()) {
         try {
           rmSync(targetBatch, { force: true });
@@ -211,6 +209,9 @@ export const linkIsolatedCli = async (
         }
       }
     } else {
+      // Host is a native binary / executable — clean up any .cmd or .bat shims first
+      try { rmSync(`${dstBase}.cmd`, { force: true }); } catch {}
+      try { rmSync(`${dstBase}.bat`, { force: true }); } catch {}
       try {
         await rm(dst, { force: true });
       } catch {
@@ -793,6 +794,9 @@ const probeCliInstallStateBody = async (
         }
       }
     }
+  }
+  if (platform() === "win32") {
+    bin = cliBin(provider);
   }
   if (!existsSync(bin)) {
     return { installed: false, version: null };

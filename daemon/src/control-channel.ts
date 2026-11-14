@@ -248,7 +248,7 @@ export const statusChangeKey = (status: TDaemonStatus): string => {
       (status.local_servers ?? [])
         .map(
           (s) =>
-            `${s.slug}:${s.port}:${s.status}:${s.has_key}:${(s.models ?? []).length}`,
+            `${s.slug}:${s.port}:${s.status}:${s.has_key}:${(s.models ?? []).map((m) => m.provider_model_id).sort().join(",")}`,
         )
         .join(","),
     ),
