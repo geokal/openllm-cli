@@ -504,7 +504,9 @@ const statusPublishCoalescer = createStatusPublishCoalescer({
     if (
       trigger === "command" ||
       trigger === "auth-sink" ||
-      trigger === "late-probe"
+      trigger === "late-probe" ||
+      trigger === "welcome" ||
+      trigger === "watcher"
     ) {
       try {
         logInfo(
