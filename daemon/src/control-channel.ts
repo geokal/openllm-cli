@@ -879,7 +879,13 @@ const startWatcher = (): void => {
     // keychain watcher tick solely then. Heartbeat-only skips provider probes.
     if (!decision.heartbeatOnly) logKeychainWatcherTick();
     watcherSkipProviderProbes = decision.heartbeatOnly;
-    pushStatusIfChanged().catch(() => {
+    // On slow heartbeat ticks, force an unconditional status push so that newly
+    // connected browser watchers on the stateless cloud relay receive a status snapshot
+    // without requiring an active change in machine state.
+    const publishPromise = decision.heartbeatOnly
+      ? pushStatus(undefined, "watcher")
+      : pushStatusIfChanged("watcher");
+    publishPromise.catch(() => {
       // best-effort: a failed snapshot push retries on the next tick
     });
   }, WATCH_MS);
@@ -1318,11 +1324,7 @@ const dispatchFrame = (frame: TRelayFrame): void => {
       // publishes on this daemon's behalf, so our own publisher starts above it.
       statusSeq = 1;
       startMigrationCheck();
-      if (probesArmed) {
-        void pushStatus(undefined, "welcome");
-      } else {
-        pendingWelcomeStatus = true;
-      }
+      void pushStatus(undefined, "welcome");
       return;
     case "relay_moved":
       // This box was superseded by a newer deploy (it pushes this instead of

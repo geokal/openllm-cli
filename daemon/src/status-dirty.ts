@@ -33,9 +33,9 @@ export const STATUS_WATCH_POLL_MS = 30_000;
 /**
  * Full recompute cadence when nothing has marked dirty. Long enough that an
  * idle laptop is not probing providers every few seconds; short enough that a
- * missed fs/auth event still surfaces within ~2 minutes.
+ * missed fs/auth event or new browser watcher on a stateless relay still surfaces within ~1 minute.
  */
-export const STATUS_WATCH_HEARTBEAT_MS = 120_000;
+export const STATUS_WATCH_HEARTBEAT_MS = 30_000;
 
 export type TStatusWatcherGate = {
   readonly markDirty: (reason?: TStatusDirtyReason) => void;
