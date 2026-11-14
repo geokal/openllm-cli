@@ -243,6 +243,15 @@ export const statusChangeKey = (status: TDaemonStatus): string => {
       status.control_caps,
       (status.control_caps ?? []).join(","),
     ),
+    optionalArrayChangeKey(
+      status.local_servers,
+      (status.local_servers ?? [])
+        .map(
+          (s) =>
+            `${s.slug}:${s.port}:${s.status}:${s.has_key}:${(s.models ?? []).length}`,
+        )
+        .join(","),
+    ),
     status.pty_supported === undefined ? "" : String(status.pty_supported),
     // The update in progress (whoever runs it): each step and download tick
     // is a change, so a dashboard sees the same steps the desktop app does.

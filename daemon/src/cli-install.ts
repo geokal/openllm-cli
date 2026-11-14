@@ -180,6 +180,15 @@ export const linkIsolatedCli = async (
       previousReal = null;
     }
   }
+  const isAlreadyLinked =
+    previousReal !== null &&
+    (platform() === "win32"
+      ? previousReal.toLowerCase() === normHost.toLowerCase()
+      : previousReal === normHost);
+  if (isAlreadyLinked) {
+    linkSidecars(dst, hostBin);
+    return { targetChanged: false };
+  }
   await mkdir(dirname(dst), { recursive: true });
   if (platform() === "win32") {
     const hostExt = extname(hostBin).toLowerCase();
@@ -187,7 +196,11 @@ export const linkIsolatedCli = async (
     if (hostExt === ".cmd" || hostExt === ".bat") {
       const targetBatch = dstExt ? `${dst.slice(0, -dstExt.length)}${hostExt}` : `${dst}${hostExt}`;
       if (dstExt === ".exe") {
-        await rm(dst, { force: true });
+        try {
+          await rm(dst, { force: true });
+        } catch {
+          // best-effort batch link on Windows
+        }
       }
       if (resolve(targetBatch).toLowerCase() !== resolve(hostBin).toLowerCase()) {
         try {
@@ -198,7 +211,11 @@ export const linkIsolatedCli = async (
         }
       }
     } else {
-      await rm(dst, { force: true });
+      try {
+        await rm(dst, { force: true });
+      } catch {
+        // best-effort removal on Windows
+      }
       createLinkOrCopy(hostBin, dst);
       if (dst.toLowerCase().endsWith(".exe")) {
         const nonExe = dst.slice(0, -4);
