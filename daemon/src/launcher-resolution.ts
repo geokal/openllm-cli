@@ -482,7 +482,10 @@ export const createLauncherResolver = (
   const managers: TManagerRegistry = deps.managers ?? defaultManagerRegistry;
   const shellProbeTimeoutMs = (): number =>
     deps.shellProbeTimeoutMs ??
-    envMs("OPENLLM_LAUNCHER_SHELL_PROBE_TIMEOUT_MS", 3_000);
+    envMs(
+      "OPENLLM_LAUNCHER_SHELL_PROBE_TIMEOUT_MS",
+      process.platform === "win32" ? 10_000 : 3_000,
+    );
   const resolveInterpreter =
     deps.resolveInterpreter ?? defaultResolveInterpreter;
   const underManagerRoot = deps.underManagerRoot ?? pathUnderManagerRoot;

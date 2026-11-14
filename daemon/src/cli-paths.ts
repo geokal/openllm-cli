@@ -170,11 +170,23 @@ const SPECS: Readonly<Record<TCliProvider, TCliSpec>> = {
   // `claude install` (run by claude.ai/install.sh under our HOME) places
   // the launcher at $HOME/.local/bin/claude.
   claude_code: {
-    binRel: "home/.local/bin/claude",
+    binRel:
+      process.platform === "win32"
+        ? "home/.local/bin/claude.exe"
+        : "home/.local/bin/claude",
     cmd: "claude",
     // The official installer's launcher → resolves to
     // ~/.local/share/claude/versions/<v> (the self-contained binary).
-    hostCandidates: (home) => [join(home, ".local", "bin", "claude")],
+    hostCandidates: (home) => [
+      ...(process.platform === "win32"
+        ? [
+            join(home, ".local", "bin", "claude.exe"),
+            join(home, ".local", "bin", "claude.cmd"),
+            join(home, "AppData", "Roaming", "npm", "claude.cmd"),
+          ]
+        : []),
+      join(home, ".local", "bin", "claude"),
+    ],
     configDir: (home) => join(home, ".claude"),
     env: ({ config }) => ({
       // Claude reads its config/credentials from CLAUDE_CONFIG_DIR
@@ -185,9 +197,25 @@ const SPECS: Readonly<Record<TCliProvider, TCliSpec>> = {
   },
   // codex install.sh with CODEX_INSTALL_DIR=<root>/bin → <root>/bin/codex.
   chatgpt: {
-    binRel: "bin/codex",
+    binRel: process.platform === "win32" ? "bin/codex.exe" : "bin/codex",
     cmd: "codex",
     hostCandidates: (home) => [
+      ...(process.platform === "win32"
+        ? [
+            join(home, ".local", "bin", "codex.exe"),
+            join(home, ".codex", "bin", "codex.exe"),
+            join(
+              home,
+              "AppData",
+              "Local",
+              "Author Software",
+              "nvm",
+              ".shim",
+              "codex.exe",
+            ),
+            join(home, "AppData", "Roaming", "npm", "codex.cmd"),
+          ]
+        : []),
       join(home, ".local", "bin", "codex"),
       join(home, ".codex", "bin", "codex"),
     ],
@@ -201,9 +229,15 @@ const SPECS: Readonly<Record<TCliProvider, TCliSpec>> = {
   },
   // kimi install.sh with KIMI_INSTALL_DIR=<root> → <root>/bin/kimi.
   kimi_code: {
-    binRel: "bin/kimi",
+    binRel: process.platform === "win32" ? "bin/kimi.exe" : "bin/kimi",
     cmd: "kimi",
     hostCandidates: (home) => [
+      ...(process.platform === "win32"
+        ? [
+            join(home, ".kimi-code", "bin", "kimi.exe"),
+            join(home, ".local", "bin", "kimi.exe"),
+          ]
+        : []),
       join(home, ".kimi-code", "bin", "kimi"),
       join(home, ".local", "bin", "kimi"),
     ],
@@ -221,7 +255,10 @@ const SPECS: Readonly<Record<TCliProvider, TCliSpec>> = {
   // drops the host launcher at ~/.grok/bin/grok (see `hostCandidates`), and
   // that is what gets symlinked here.
   grok: {
-    binRel: "home/.local/bin/grok",
+    binRel:
+      process.platform === "win32"
+        ? "home/.local/bin/grok.exe"
+        : "home/.local/bin/grok",
     cmd: "grok",
     // The official x.ai/cli installer's default BIN_DIR is ~/.grok/bin
     // (`BIN_DIR="${GROK_BIN_DIR:-$HOME/.grok/bin}"`), and it only adds a
@@ -229,6 +266,12 @@ const SPECS: Readonly<Record<TCliProvider, TCliSpec>> = {
     // the primary location must come first, with ~/.local/bin/grok as the
     // conditional fallback. (Verified against the live installer 2026-06-30.)
     hostCandidates: (home) => [
+      ...(process.platform === "win32"
+        ? [
+            join(home, ".grok", "bin", "grok.exe"),
+            join(home, ".local", "bin", "grok.exe"),
+          ]
+        : []),
       join(home, ".grok", "bin", "grok"),
       join(home, ".local", "bin", "grok"),
     ],
@@ -241,11 +284,22 @@ const SPECS: Readonly<Record<TCliProvider, TCliSpec>> = {
   // ⚠️ RESEARCH-UNVERIFIED: Cursor's official installer is reported to place
   // this launcher at ~/.local/bin/cursor-agent.
   cursor: {
-    binRel: "home/.local/bin/cursor-agent",
+    binRel:
+      process.platform === "win32"
+        ? "home/.local/bin/cursor-agent.exe"
+        : "home/.local/bin/cursor-agent",
     cmd: "cursor-agent",
     // ⚠️ RESEARCH-UNVERIFIED: best-known Cursor installer launcher path;
     // `resolveOnPath` below covers other installation layouts.
-    hostCandidates: (home) => [join(home, ".local", "bin", "cursor-agent")],
+    hostCandidates: (home) => [
+      ...(process.platform === "win32"
+        ? [
+            join(home, ".local", "bin", "cursor-agent.exe"),
+            join(home, ".local", "bin", "cursor-agent.cmd"),
+          ]
+        : []),
+      join(home, ".local", "bin", "cursor-agent"),
+    ],
     // Live-verified (Linux, cursor-agent 2026.07.23): the credential store is
     // the XDG path `$XDG_CONFIG_HOME/cursor/auth.json`, i.e. `<home>/.config/
     // cursor/auth.json` once HOME + XDG_CONFIG_HOME are isolated (the CLI's own
@@ -277,9 +331,17 @@ const SPECS: Readonly<Record<TCliProvider, TCliSpec>> = {
   // daemon never assumes an isolated login.keychain. File backend + inline
   // `providers.meta.access_token` is the supported durable store.
   muse: {
-    binRel: "home/.local/bin/muse",
+    binRel:
+      process.platform === "win32"
+        ? "home/.local/bin/muse.exe"
+        : "home/.local/bin/muse",
     cmd: "muse",
-    hostCandidates: museHostCandidates,
+    hostCandidates: (home) => [
+      ...(process.platform === "win32"
+        ? [join(home, ".local", "bin", "muse.exe")]
+        : []),
+      ...museHostCandidates(home),
+    ],
     configDir: (home) => join(home, ".config", "muse"),
     env: ({ home }) => ({
       TBH_CREDENTIAL_BACKEND: MUSE_CREDENTIAL_BACKEND,

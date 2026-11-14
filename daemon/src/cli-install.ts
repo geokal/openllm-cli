@@ -183,6 +183,25 @@ export const linkIsolatedCli = async (
   await mkdir(dirname(dst), { recursive: true });
   await rm(dst, { force: true });
   createLinkOrCopy(hostBin, dst);
+  if (platform() === "win32") {
+    if (dst.toLowerCase().endsWith(".exe")) {
+      const nonExe = dst.slice(0, -4);
+      try {
+        rmSync(nonExe, { force: true });
+        createLinkOrCopy(hostBin, nonExe);
+      } catch {
+        // best-effort dual link on Windows
+      }
+    } else {
+      const withExe = `${dst}.exe`;
+      try {
+        rmSync(withExe, { force: true });
+        createLinkOrCopy(hostBin, withExe);
+      } catch {
+        // best-effort dual link on Windows
+      }
+    }
+  }
   linkSidecars(dst, hostBin);
   let nextReal: string | null = null;
   try {
@@ -233,7 +252,8 @@ const linkSidecars = (isolatedBin: string, hostBin?: string): void => {
     }
     const isolatedDir = dirname(isolatedBin);
     if (realDir === isolatedDir) return;
-    const prefix = `${basename(isolatedBin)}-`;
+    const base = basename(isolatedBin).replace(/\.exe$/i, "");
+    const prefix = `${base}-`;
     const current = new Set<string>();
     for (const entry of readdirSync(realDir)) {
       if (!entry.startsWith(prefix)) continue;
@@ -248,6 +268,21 @@ const linkSidecars = (isolatedBin: string, hostBin?: string): void => {
       try {
         rmSync(link, { force: true });
         createLinkOrCopy(target, link);
+        if (platform() === "win32") {
+          if (link.toLowerCase().endsWith(".exe")) {
+            const nonExe = link.slice(0, -4);
+            try {
+              rmSync(nonExe, { force: true });
+              createLinkOrCopy(target, nonExe);
+            } catch {}
+          } else {
+            const withExe = `${link}.exe`;
+            try {
+              rmSync(withExe, { force: true });
+              createLinkOrCopy(target, withExe);
+            } catch {}
+          }
+        }
       } catch {
         // per-sidecar best effort — the main CLI still runs without it
       }
@@ -256,7 +291,12 @@ const linkSidecars = (isolatedBin: string, hostBin?: string): void => {
     // beside the real binary (a host update that removed/renamed one) — a
     // dangling link would otherwise shadow the vendor's own resolution.
     for (const entry of readdirSync(isolatedDir)) {
-      if (!entry.startsWith(prefix) || current.has(entry)) continue;
+      if (!entry.startsWith(prefix)) continue;
+      const entryBase = entry.replace(/\.exe$/i, "");
+      const match = [...current].some(
+        (c) => c === entry || c.replace(/\.exe$/i, "") === entryBase,
+      );
+      if (match) continue;
       try {
         rmSync(join(isolatedDir, entry), { force: true });
       } catch {
@@ -520,7 +560,10 @@ const CLI_INSTALL_STATE_TTL_MS = envMs("OPENLLM_CLI_STATE_TTL_MS", 30_000);
  * loaded by `daemonPort()` AFTER this module is first evaluated.
  */
 const cliVersionProbeTimeoutMs = (): number =>
-  envMs("OPENLLM_CLI_VERSION_PROBE_TIMEOUT_MS", 3_000);
+  envMs(
+    "OPENLLM_CLI_VERSION_PROBE_TIMEOUT_MS",
+    process.platform === "win32" ? 10_000 : 3_000,
+  );
 
 /** Throttle / in-flight maps are keyed by the provider's install root, so a
  *  re-pointed state dir gets its own reconcile instead of a stale one. */
