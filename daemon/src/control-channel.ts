@@ -448,6 +448,7 @@ let daemonSessionId: string | null = null;
 /** Null while handshake is pending; false for an older relay welcome. */
 let supportsOrderedStatus: boolean | null = null;
 let statusSeq = 0;
+let lastBroadcastAtMs = 0;
 const statusPublishCoalescer = createStatusPublishCoalescer({
   now: () => Date.now(),
   epoch: () => connectionGeneration,
@@ -486,6 +487,7 @@ const statusPublishCoalescer = createStatusPublishCoalescer({
     );
   },
   send: (status, active, trigger) => {
+    lastBroadcastAtMs = Date.now();
     const ordered = supportsOrderedStatus === true && daemonSessionId !== null;
     if (ordered) statusSeq += 1;
     // Cache for the next hello — only a full snapshot, never the graceful
@@ -875,16 +877,20 @@ const startWatcher = (): void => {
     // binary stamp, so a changed stamp is a full tick that reads the new one.
     markCliBinariesDirtyIfChanged();
     const decision = statusWatcherGate.consumeWatcherCompute();
-    if (!decision.run) return;
+    const now = Date.now();
+    const heartbeatDue =
+      lastBroadcastAtMs === 0 || now - lastBroadcastAtMs >= STATUS_WATCH_HEARTBEAT_MS;
+    if (!decision.run && !heartbeatDue) return;
     // Idle ticks must not touch keychain / auth machinery (§6). Only a dirty
     // event (or the slow heartbeat) may enter the status path; log the
     // keychain watcher tick solely then. Heartbeat-only skips provider probes.
-    if (!decision.heartbeatOnly) logKeychainWatcherTick();
-    watcherSkipProviderProbes = decision.heartbeatOnly;
-    // On slow heartbeat ticks, force an unconditional status push so that newly
-    // connected browser watchers on the stateless cloud relay receive a status snapshot
-    // without requiring an active change in machine state.
-    const publishPromise = decision.heartbeatOnly
+    const isHeartbeatOnly = decision.heartbeatOnly || (!decision.run && heartbeatDue);
+    if (!isHeartbeatOnly) logKeychainWatcherTick();
+    watcherSkipProviderProbes = isHeartbeatOnly || heartbeatDue;
+    // On slow heartbeat ticks (or when heartbeat deadline expired), force an unconditional
+    // status push so that newly connected browser watchers on the stateless cloud relay receive
+    // a status snapshot without requiring an active change in machine state.
+    const publishPromise = (decision.heartbeatOnly || heartbeatDue)
       ? pushStatus(undefined, "watcher")
       : pushStatusIfChanged("watcher");
     publishPromise.catch(() => {
@@ -909,6 +915,7 @@ const stopWatcher = (): void => {
     clearInterval(watchTimer);
     watchTimer = null;
   }
+  lastBroadcastAtMs = 0;
   // A restarted watcher must re-baseline instead of diffing a stale snapshot.
   resetCredentialStoreFingerprint();
   resetCliBinaryFingerprint();
@@ -1481,6 +1488,42 @@ const deliverBinaryFrameSync = (
   muxHostOnBytes(bytes);
 };
 
+const formatSchemaErrorSafe = (failure: unknown): string => {
+  if (!failure) return "unknown error";
+  return String(failure)
+    .replace(/"[^"\\]*(?:\\.[^"\\]*)*"/g, '"***"')
+    .slice(0, 300);
+};
+
+const isValidRelaxedWelcomeFrame = (val: unknown): boolean => {
+  if (val === null || typeof val !== "object" || Array.isArray(val)) return false;
+  const obj = val as Record<string, unknown>;
+  if (obj.type !== "welcome") return false;
+  if (obj.snapshot !== undefined) {
+    if (!Array.isArray(obj.snapshot) || !obj.snapshot.every((s) => typeof s === "string")) {
+      return false;
+    }
+  }
+  if (obj.snapshot_caps !== undefined) {
+    if (
+      obj.snapshot_caps === null ||
+      typeof obj.snapshot_caps !== "object" ||
+      Array.isArray(obj.snapshot_caps)
+    ) {
+      return false;
+    }
+    for (const caps of Object.values(obj.snapshot_caps)) {
+      if (!Array.isArray(caps) || !caps.every((c) => typeof c === "string")) {
+        return false;
+      }
+    }
+  }
+  if (obj.daemon_session_id !== undefined && typeof obj.daemon_session_id !== "string") {
+    return false;
+  }
+  return true;
+};
+
 const onMessage = (data: unknown): void => {
   // Capture generation at receive time so async Blob reads cannot deliver into
   // a later connection after reconnect/reset.
@@ -1525,22 +1568,25 @@ const onMessage = (data: unknown): void => {
     return;
   }
   // Fallback for welcome frame: never silently drop a welcome handshake even if
-  // an SDK schema constraint fails on open-vocabulary capabilities.
+  // an SDK schema constraint fails on open-vocabulary capabilities, provided the frame
+  // structure itself is valid (arrays of capability strings, valid session id).
   if (
     json !== null &&
     typeof json === "object" &&
     !Array.isArray(json) &&
     (json as { type?: unknown }).type === "welcome"
   ) {
-    logWarn(
-      "control-channel",
-      "welcome frame failed strict schema validation; applying fallback decode",
-      {
-        err: Result.isFailure(r) ? String(r.failure) : "unknown error",
-      },
-    );
-    onFrame(json as TRelayFrame);
-    return;
+    if (isValidRelaxedWelcomeFrame(json)) {
+      logWarn(
+        "control-channel",
+        "welcome frame failed strict schema validation; applying fallback decode",
+        {
+          err: Result.isFailure(r) ? formatSchemaErrorSafe(r.failure) : "unknown error",
+        },
+      );
+      onFrame(json as TRelayFrame);
+      return;
+    }
   }
   // Unknown/undecodable JSON: if it looks like a command with an id, ack an
   // explicit outdated error so future kinds fail clearly instead of hanging
@@ -1578,7 +1624,7 @@ const onMessage = (data: unknown): void => {
       json !== null && typeof json === "object"
         ? (json as { type?: unknown }).type
         : typeof json,
-    err: Result.isFailure(r) ? String(r.failure) : "unknown error",
+    err: Result.isFailure(r) ? formatSchemaErrorSafe(r.failure) : "unknown error",
   });
 };
 
