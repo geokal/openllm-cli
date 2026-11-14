@@ -19,7 +19,7 @@
  *   bun run packages/cli/scripts/compile.ts --host     # current host only
  *   bun run packages/cli/scripts/compile.ts --version 1.2.3
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -187,18 +187,25 @@ const buildOne = async (
   const outfile = target === null ? `${OUT_DIR}/openllm` : outfileFor(target);
   const targetArgs = target === null ? [] : ["--target", target];
   const defines = compileDefineArgs(cloudOrigin, version, fingerprint);
+  if (existsSync(outfile)) rmSync(outfile, { force: true });
+  if (existsSync(`${outfile}.exe`)) rmSync(`${outfile}.exe`, { force: true });
   await $`bun build ${ENTRY} \
     ${COMPILE_BUN_FLAGS} \
     ${defines} \
     ${targetArgs} \
     --outfile ${outfile}`;
-  // On Windows, bun build --compile appends .exe to the output executable name
+  // On Windows targets, bun build --compile appends .exe to the output executable name
   // if not already present. Resolve the actual binary path created by bun.
-  const actualOutfile = existsSync(outfile)
-    ? outfile
-    : existsSync(`${outfile}.exe`)
-      ? `${outfile}.exe`
-      : outfile;
+  const isWindows =
+    (target !== null && target.includes("windows")) ||
+    (target === null && process.platform === "win32");
+  const actualOutfile = isWindows && existsSync(`${outfile}.exe`)
+    ? `${outfile}.exe`
+    : existsSync(outfile)
+      ? outfile
+      : existsSync(`${outfile}.exe`)
+        ? `${outfile}.exe`
+        : outfile;
 
   // Gzip sidecar for DISTRIBUTION — the published GitHub asset is the `.gz`.
   // The release pins the sha256 of the DECOMPRESSED binary; install +

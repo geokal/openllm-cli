@@ -707,7 +707,6 @@ export const antigravityDelegate: TProviderDelegate = {
         const activeLogin = activeLoginClient.get();
         wiring.slot.cancelAll();
         if (activeLogin !== null) {
-          activeLoginClient.set(null);
           const exited = await waitForExit(activeLogin, 5_000);
           if (!exited) {
             return {
@@ -715,6 +714,7 @@ export const antigravityDelegate: TProviderDelegate = {
               detail: "timed out waiting for active sign-in process to exit",
             };
           }
+          activeLoginClient.set(null);
         }
         try {
           const marker = logoutMarker();
@@ -923,8 +923,16 @@ const probeAntigravityModels = async (): Promise<ReadonlyArray<TProviderModelEnt
       if (client !== null) {
         try {
           client.dispose();
-          await waitForExit(client, 5_000);
-        } finally {
+          const exited = await waitForExit(client, 5_000);
+          if (exited) {
+            unregisterProbeClient(home, client);
+          } else {
+            // Retain client tracking so logout can observe the in-flight process exit
+            void client.whenExited().finally(() => {
+              unregisterProbeClient(home, client);
+            });
+          }
+        } catch {
           unregisterProbeClient(home, client);
         }
       }

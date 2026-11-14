@@ -149,20 +149,20 @@ const antigravityHarnessPath = (): string => {
 /** `{"version":"x.y.z",…}` from the installer's completion marker. */
 const readAntigravityInstalledVersion = (
   resolvedBin: string,
-): string | null | undefined => {
+): string | null => {
   try {
     const raw = readFileSync(
       join(dirname(resolvedBin), ANTIGRAVITY_INSTALL_MARKER),
       "utf8",
     );
     const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== "object") return undefined;
+    if (parsed === null || typeof parsed !== "object") return null;
     const version = (parsed as { readonly version?: unknown }).version;
     return typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version)
       ? version
-      : undefined;
+      : null;
   } catch {
-    return undefined;
+    return null;
   }
 };
 
@@ -436,8 +436,17 @@ export const cliHome = (
 };
 
 /** Absolute path to the installed isolated binary. */
-export const cliBin = (provider: TCliProvider, home?: string): string =>
-  join(cliRoot(provider, home), SPECS[provider].binRel);
+export const cliBin = (provider: TCliProvider, home?: string): string => {
+  const base = join(cliRoot(provider, home), SPECS[provider].binRel);
+  if (process.platform === "win32") {
+    if (existsSync(base)) return base;
+    const baseWithoutExt = base.replace(/\.(exe|cmd|bat)$/i, "");
+    if (existsSync(`${baseWithoutExt}.cmd`)) return `${baseWithoutExt}.cmd`;
+    if (existsSync(`${baseWithoutExt}.bat`)) return `${baseWithoutExt}.bat`;
+    if (existsSync(`${baseWithoutExt}.exe`)) return `${baseWithoutExt}.exe`;
+  }
+  return base;
+};
 
 /** Version from install metadata, or `undefined` when the provider has none
  *  (callers then spawn the normal `--version` probe). */

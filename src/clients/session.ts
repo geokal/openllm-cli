@@ -672,6 +672,12 @@ export type TExecClient = (
   unsetEnv?: readonly string[],
 ) => Promise<number>;
 
+const quoteCmdArg = (arg: string): string => {
+  if (arg === "") return '""';
+  if (!/[ \t\n\v"&|<>^%]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '""')}"`;
+};
+
 /**
  * Spawn the client with inherited stdio (so it owns the TTY) and forward
  * signals, resolving to the exit code the child produced. A signal-terminated
@@ -682,7 +688,10 @@ const defaultExecClient: TExecClient = (bin, args, env, unsetEnv = []) =>
   new Promise((resolve) => {
     const isWindows = process.platform === "win32";
     const isCmdOrBat = isWindows && /\.(cmd|bat)$/i.test(bin);
-    const child = spawn(bin, args, {
+    const finalBin =
+      isCmdOrBat && /\s/.test(bin) && !bin.startsWith('"') ? `"${bin}"` : bin;
+    const finalArgs = isCmdOrBat ? args.map(quoteCmdArg) : args;
+    const child = spawn(finalBin, finalArgs, {
       stdio: "inherit",
       env: mergeSessionEnv(process.env, env, unsetEnv),
       ...(isCmdOrBat ? { shell: true } : {}),

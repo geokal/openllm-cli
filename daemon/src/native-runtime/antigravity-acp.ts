@@ -44,7 +44,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { TChatCompletionChunk } from "@openllmsh/sdk/protocol";
@@ -126,12 +126,26 @@ export const antigravitySpawnEnv = (
 /** The agent's argv. Linux builds need an explicit empty `--uid=`. */
 export const antigravityArgv = (bin: string): string[] => {
   const base = basename(bin).toLowerCase();
-  if (
-    base === "agy" ||
-    base === "agy.exe" ||
-    base === "agy.cmd" ||
-    base === "agy.bat"
-  ) {
+  let realBase = base;
+  try {
+    realBase = basename(realpathSync(bin)).toLowerCase();
+  } catch {
+    /* fallback to basename if realpathSync throws */
+  }
+  const isStandaloneServer = (name: string): boolean =>
+    name === "agy_acp_server" || name === "agy_acp_server.exe";
+
+  if (isStandaloneServer(realBase)) {
+    return process.platform === "linux" ? [bin, "--uid="] : [bin];
+  }
+
+  const isAgy = (name: string): boolean =>
+    name === "agy" ||
+    name === "agy.exe" ||
+    name === "agy.cmd" ||
+    name === "agy.bat";
+
+  if (isAgy(realBase) || (!isStandaloneServer(base) && isAgy(base))) {
     return [bin, "acp"];
   }
   return process.platform === "linux" ? [bin, "--uid="] : [bin];

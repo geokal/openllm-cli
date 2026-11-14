@@ -28,7 +28,7 @@ import {
 } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { platform } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { projectDoctorOutcomeLedger } from "@openllmsh/sdk/protocol";
 import type { TCliProvider } from "./cli-paths";
 import {
@@ -181,26 +181,50 @@ export const linkIsolatedCli = async (
     }
   }
   await mkdir(dirname(dst), { recursive: true });
-  await rm(dst, { force: true });
-  createLinkOrCopy(hostBin, dst);
   if (platform() === "win32") {
-    if (dst.toLowerCase().endsWith(".exe")) {
-      const nonExe = dst.slice(0, -4);
-      try {
-        rmSync(nonExe, { force: true });
-        createLinkOrCopy(hostBin, nonExe);
-      } catch {
-        // best-effort dual link on Windows
+    const hostExt = extname(hostBin).toLowerCase();
+    const dstExt = extname(dst).toLowerCase();
+    if (hostExt === ".cmd" || hostExt === ".bat") {
+      const targetBatch = dstExt ? `${dst.slice(0, -dstExt.length)}${hostExt}` : `${dst}${hostExt}`;
+      if (dstExt === ".exe") {
+        await rm(dst, { force: true });
+      }
+      if (resolve(targetBatch).toLowerCase() !== resolve(hostBin).toLowerCase()) {
+        try {
+          rmSync(targetBatch, { force: true });
+          createLinkOrCopy(hostBin, targetBatch);
+        } catch {
+          // best-effort batch link on Windows
+        }
       }
     } else {
-      const withExe = `${dst}.exe`;
-      try {
-        rmSync(withExe, { force: true });
-        createLinkOrCopy(hostBin, withExe);
-      } catch {
-        // best-effort dual link on Windows
+      await rm(dst, { force: true });
+      createLinkOrCopy(hostBin, dst);
+      if (dst.toLowerCase().endsWith(".exe")) {
+        const nonExe = dst.slice(0, -4);
+        if (resolve(nonExe).toLowerCase() !== resolve(hostBin).toLowerCase()) {
+          try {
+            rmSync(nonExe, { force: true });
+            createLinkOrCopy(hostBin, nonExe);
+          } catch {
+            // best-effort dual link on Windows
+          }
+        }
+      } else {
+        const withExe = `${dst}.exe`;
+        if (resolve(withExe).toLowerCase() !== resolve(hostBin).toLowerCase()) {
+          try {
+            rmSync(withExe, { force: true });
+            createLinkOrCopy(hostBin, withExe);
+          } catch {
+            // best-effort dual link on Windows
+          }
+        }
       }
     }
+  } else {
+    await rm(dst, { force: true });
+    createLinkOrCopy(hostBin, dst);
   }
   linkSidecars(dst, hostBin);
   let nextReal: string | null = null;

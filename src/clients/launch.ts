@@ -163,7 +163,8 @@ const parseGrokCatalog = (
 export const overlayVars = (
   inputs: TLaunchInputs,
 ): Readonly<Record<string, string>> => {
-  const norm = (p: string) => p.replaceAll("\\", "/");
+  const norm = (p: string) =>
+    process.platform === "win32" ? p.replaceAll("\\", "/") : p;
   return {
     OPENLLM_API_BASE: inputs.apiBase,
     OPENLLM_API_KEY: inputs.apiKey,
