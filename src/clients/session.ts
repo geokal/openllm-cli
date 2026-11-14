@@ -675,7 +675,7 @@ export type TExecClient = (
 const quoteCmdArg = (arg: string): string => {
   if (arg === "") return '""';
   if (!/[ \t\n\v"&|<>^%]/.test(arg)) return arg;
-  return `"${arg.replace(/"/g, '""')}"`;
+  return `"${arg.replace(/"/g, '""').replace(/%/g, "^%")}"`;
 };
 
 /**

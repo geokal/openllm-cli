@@ -25,6 +25,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { platform } from "node:os";
@@ -199,11 +200,14 @@ export const linkIsolatedCli = async (
       const altBatch = `${dstBase}${hostExt === ".cmd" ? ".bat" : ".cmd"}`;
       // Clean up native binary or stale alternate batch extension so cliBin doesn't pick it
       try { rmSync(`${dstBase}.exe`, { force: true }); } catch {}
+      try { rmSync(dstBase, { force: true }); } catch {}
       try { rmSync(altBatch, { force: true }); } catch {}
       if (resolve(targetBatch).toLowerCase() !== resolve(hostBin).toLowerCase()) {
         try {
           rmSync(targetBatch, { force: true });
-          createLinkOrCopy(hostBin, targetBatch);
+          // Write a delegating batch wrapper that preserves hostBin's directory context (%~dp0)
+          const shim = `@echo off\r\ncall "${resolve(hostBin)}" %*\r\nexit /b %ERRORLEVEL%\r\n`;
+          writeFileSync(targetBatch, shim, "utf8");
         } catch {
           // best-effort batch link on Windows
         }
@@ -212,31 +216,15 @@ export const linkIsolatedCli = async (
       // Host is a native binary / executable — clean up any .cmd or .bat shims first
       try { rmSync(`${dstBase}.cmd`, { force: true }); } catch {}
       try { rmSync(`${dstBase}.bat`, { force: true }); } catch {}
-      try {
-        await rm(dst, { force: true });
-      } catch {
-        // best-effort removal on Windows
-      }
-      createLinkOrCopy(hostBin, dst);
-      if (dst.toLowerCase().endsWith(".exe")) {
-        const nonExe = dst.slice(0, -4);
-        if (resolve(nonExe).toLowerCase() !== resolve(hostBin).toLowerCase()) {
-          try {
-            rmSync(nonExe, { force: true });
-            createLinkOrCopy(hostBin, nonExe);
-          } catch {
-            // best-effort dual link on Windows
-          }
-        }
-      } else {
-        const withExe = `${dst}.exe`;
-        if (resolve(withExe).toLowerCase() !== resolve(hostBin).toLowerCase()) {
-          try {
-            rmSync(withExe, { force: true });
-            createLinkOrCopy(hostBin, withExe);
-          } catch {
-            // best-effort dual link on Windows
-          }
+      const targetExe = `${dstBase}.exe`;
+      try { rmSync(targetExe, { force: true }); } catch {}
+      createLinkOrCopy(hostBin, targetExe);
+      if (resolve(dstBase).toLowerCase() !== resolve(hostBin).toLowerCase()) {
+        try {
+          rmSync(dstBase, { force: true });
+          createLinkOrCopy(hostBin, dstBase);
+        } catch {
+          // best-effort dual link on Windows
         }
       }
     }
@@ -297,7 +285,9 @@ const linkSidecars = (isolatedBin: string, hostBin?: string): void => {
     const base = basename(isolatedBin).replace(/\.exe$/i, "");
     const prefix = `${base}-`;
     const current = new Set<string>();
-    for (const entry of readdirSync(realDir)) {
+    const hostEntries = readdirSync(realDir);
+    const hostEntryNames = new Set(hostEntries.map((e) => e.toLowerCase()));
+    for (const entry of hostEntries) {
       if (!entry.startsWith(prefix)) continue;
       current.add(entry);
       const target = join(realDir, entry);
@@ -313,16 +303,22 @@ const linkSidecars = (isolatedBin: string, hostBin?: string): void => {
         if (platform() === "win32") {
           if (link.toLowerCase().endsWith(".exe")) {
             const nonExe = link.slice(0, -4);
-            try {
-              rmSync(nonExe, { force: true });
-              createLinkOrCopy(target, nonExe);
-            } catch {}
+            const nonExeEntry = entry.slice(0, -4);
+            if (!hostEntryNames.has(nonExeEntry.toLowerCase())) {
+              try {
+                rmSync(nonExe, { force: true });
+                createLinkOrCopy(target, nonExe);
+              } catch {}
+            }
           } else {
             const withExe = `${link}.exe`;
-            try {
-              rmSync(withExe, { force: true });
-              createLinkOrCopy(target, withExe);
-            } catch {}
+            const withExeEntry = `${entry}.exe`;
+            if (!hostEntryNames.has(withExeEntry.toLowerCase())) {
+              try {
+                rmSync(withExe, { force: true });
+                createLinkOrCopy(target, withExe);
+              } catch {}
+            }
           }
         }
       } catch {
