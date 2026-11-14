@@ -200,9 +200,14 @@ export const killSessionHostViaCtl = async (
 
     let ws: WebSocket;
     try {
-      ws = new WebSocket(
-        socketPath.startsWith("/") ? `ws+unix://${socketPath}` : socketPath,
-      );
+      const isUnixPath =
+        socketPath.startsWith("/") ||
+        (process.platform === "win32" && /^[a-zA-Z]:[\\/]/.test(socketPath));
+      const normalized = socketPath.replaceAll("\\", "/");
+      const url = isUnixPath
+        ? `ws+unix://${normalized.startsWith("/") ? "" : "/"}${normalized}`
+        : socketPath;
+      ws = new WebSocket(url);
     } catch {
       settle(false);
       return;

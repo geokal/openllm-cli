@@ -348,7 +348,10 @@ export const dialObserver = (
   new Promise((resolve) => {
     let ws: WebSocket;
     try {
-      ws = new WebSocket(`ws+unix://${socketPath}`);
+      const normalized = socketPath.replaceAll("\\", "/");
+      ws = new WebSocket(
+        `ws+unix://${normalized.startsWith("/") ? "" : "/"}${normalized}`,
+      );
     } catch {
       resolve(null);
       return;

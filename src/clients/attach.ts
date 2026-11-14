@@ -171,7 +171,13 @@ export type TBrokerAttachTarget = string;
  */
 export const brokerAttachUrl = (target: TBrokerAttachTarget): string => {
   if (target.startsWith("ws+unix://")) return target;
-  if (target.startsWith("/")) return `ws+unix://${target}`;
+  if (
+    target.startsWith("/") ||
+    (process.platform === "win32" && /^[a-zA-Z]:[\\/]/.test(target))
+  ) {
+    const normalized = target.replaceAll("\\", "/");
+    return `ws+unix://${normalized.startsWith("/") ? "" : "/"}${normalized}`;
+  }
   if (target.startsWith("ws://") || target.startsWith("wss://"))
     return target.endsWith("/broker/session")
       ? target

@@ -9,14 +9,17 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { stateDir } from "./env";
 
+const binExt = process.platform === "win32" ? ".exe" : "";
+
 /** Where the install script places the CLI (`~/.openllm/bin/openllm`). */
-export const cliBinaryPath = (): string => join(stateDir(), "bin", "openllm");
+export const cliBinaryPath = (): string =>
+  join(stateDir(), "bin", `openllm${binExt}`);
 
 /** Pre-rename install location (`~/.openllm/bin/openllmc`) — resolved so a
  *  machine that never re-installed after the openllmc → openllm rename still
  *  has a CLI to spawn. */
 export const legacyCliBinaryPath = (): string =>
-  join(stateDir(), "bin", "openllmc");
+  join(stateDir(), "bin", `openllmc${binExt}`);
 
 /**
  * DEV-ONLY override: an absolute path to a runnable `openllm` the daemon should
@@ -41,4 +44,6 @@ export const cliBinaryOverride = (): string | null => {
 export const resolveOpenllmCli = (): string | null =>
   cliBinaryOverride() ??
   [cliBinaryPath(), legacyCliBinaryPath()].find(existsSync) ??
+  Bun.which("openllm") ??
+  (process.platform === "win32" ? Bun.which("openllm.exe") : null) ??
   null;

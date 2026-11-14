@@ -176,7 +176,7 @@ const bunPtySpawner: TPtySpawner = (args) => {
       // New session + process-group leader so the PTY can become the
       // controlling tty (TIOCSCTTY). Without this, bash -il prints
       // "cannot set terminal process group" / "no job control".
-      detached: true,
+      detached: process.platform !== "win32",
     });
   } catch (err) {
     // Spawn threw (ENOENT etc.) — the terminal was already created above;
@@ -212,7 +212,8 @@ const bunPtySpawner: TPtySpawner = (args) => {
   };
 };
 
-export const ptySupported = (): boolean => process.platform !== "win32";
+export const ptySupported = (): boolean =>
+  typeof (Bun as unknown as { Terminal?: unknown }).Terminal === "function";
 
 // ─── session state ───────────────────────────────────────────────────
 
@@ -602,6 +603,14 @@ const argvFor = (
   realPty = true,
 ): ReadonlyArray<string> => {
   if (cli === "shell") {
+    if (process.platform === "win32") {
+      const shell =
+        process.env.SHELL ??
+        (existsSync("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+          ? "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+          : (process.env.COMSPEC ?? "cmd.exe"));
+      return [shell];
+    }
     const shell =
       process.env.SHELL ??
       (process.platform === "darwin" ? "/bin/zsh" : "/bin/bash");
