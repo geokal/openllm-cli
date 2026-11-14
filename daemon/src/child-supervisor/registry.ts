@@ -149,6 +149,7 @@ export const defaultProcessStartTimeHelperSpawn: TProcessStartTimeHelperSpawn =
           {
             stdout: "pipe",
             stderr: "ignore",
+            windowsHide: true,
           },
         )
       : Bun.spawn(["ps", "-o", "lstart=", "-p", String(pid)], {

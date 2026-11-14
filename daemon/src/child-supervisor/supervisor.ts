@@ -396,7 +396,10 @@ export const createChildSupervisor = (
     const subprocess = Bun.spawn([...spawnArgv], {
       ...opts,
       // POSIX: lead an independently killable process group (pgid === pid).
-      detached: true,
+      // Windows: detached creates a visible new console/terminal window;
+      // taskkill /T terminates the process tree without needing detached groups.
+      detached: process.platform !== "win32",
+      ...(process.platform === "win32" ? { windowsHide: true } : {}),
     });
     const pid = subprocess.pid;
     const pgid = pid;

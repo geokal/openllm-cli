@@ -245,7 +245,8 @@ const spawnHostProcessDefault: TSpawnHostProcess = (argv) => {
   // long-lived + detached and outlive the spawning daemon process; the
   // disposable child registry must not reap them on boot/drain.
   const proc = Bun.spawn([...argv], {
-    detached: true,
+    detached: process.platform !== "win32",
+    ...(process.platform === "win32" ? { windowsHide: true } : {}),
     stdio: ["ignore", "ignore", "ignore"],
   });
   proc.unref();

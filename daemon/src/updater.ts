@@ -180,6 +180,7 @@ export const binaryFingerprint = async (
       stdout: "pipe",
       stderr: "ignore",
       timeout: PROBE_TIMEOUT_MS,
+      ...(process.platform === "win32" ? { windowsHide: true } : {}),
     });
     const out = await new Response(proc.stdout).text();
     if ((await proc.exited) !== 0) return null;

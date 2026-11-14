@@ -4,6 +4,7 @@ export const spawnCommand = (
   target: string,
   args: readonly string[],
 ): string[] =>
-  platform === "win32" && target.toLowerCase().endsWith(".cmd")
+  platform === "win32" &&
+  (target.toLowerCase().endsWith(".cmd") || target.toLowerCase().endsWith(".bat"))
     ? ["cmd.exe", "/c", target, ...args]
     : [target, ...args];

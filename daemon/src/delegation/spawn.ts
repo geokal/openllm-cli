@@ -378,6 +378,7 @@ export const runCaptureResult = async (
       stderr: opts?.onFailureStderr !== undefined ? "pipe" : "ignore",
       cwd: spawnCwd(env),
       ...(spawnEnv(env) !== undefined ? { env: spawnEnv(env) } : {}),
+      ...(process.platform === "win32" ? { windowsHide: true } : {}),
     };
     const child = superviseSpawn(
       sandboxSpawnArgs(command, { probe: opts?.probe }),
@@ -1602,6 +1603,7 @@ export const openUrl = (url: string): void => {
       stdout: "ignore",
       stderr: "ignore",
       cwd: spawnCwd(undefined),
+      ...(process.platform === "win32" ? { windowsHide: true } : {}),
     });
   } catch {
     // best-effort — the user can copy the URL from the card detail
